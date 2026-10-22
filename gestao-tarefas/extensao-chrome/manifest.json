@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Tarefas ADEMP para Gmail",
+  "version": "1.2.0",
+  "description": "Botões de tarefa (Abrir tarefa, Play, Concluir, Cancelar) dentro dos e-mails do Gmail.",
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_title": "Abrir o app Tarefas ADEMP",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["gmail-dom.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://gestao-tarefas-1014439328942.southamerica-east1.run.app/*"]
+}

@@ -1,0 +1,140 @@
+// Modelo de dados da Gestão de Tarefas.
+// Todas as datas são gravadas em UTC (timestamptz) e exibidas em America/Sao_Paulo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// Fluxo: CRIADO (exibido como "Nova") → ABERTA → EM_ANDAMENTO → CONCLUIDO.
+// CANCELADO pode ocorrer a qualquer momento.
+enum TaskStatus {
+  CRIADO
+  ABERTA
+  EM_ANDAMENTO
+  CONCLUIDO
+  CANCELADO
+}
+
+enum TaskOrigin {
+  EMAIL
+  MANUAL
+}
+
+model User {
+  id        String   @id @default(cuid())
+  googleSub String?  @unique
+  email     String   @unique
+  name      String
+  image     String?
+  role      Role     @default(USER)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  lastLogin DateTime? @db.Timestamptz(3)
+
+  tasksResponsible Task[]        @relation("TaskResponsible")
+  tasksCreated     Task[]        @relation("TaskCreator")
+  notes            TaskNote[]
+  history          TaskHistory[]
+  googleToken      GoogleToken?
+}
+
+// Tokens OAuth do Google usados SOMENTE para ler a caixa do próprio usuário
+// (recurso "Criar tarefa a partir de e-mail" no app web). O refresh token é
+// criptografado (AES-256-GCM) com TOKEN_ENCRYPTION_KEY.
+model GoogleToken {
+  userId       String    @id
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime? @db.Timestamptz(3)
+  scope        String
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+model Task {
+  id            Int        @id @default(autoincrement())
+  title         String
+  description   String     @default("")
+  origin        TaskOrigin
+  status        TaskStatus @default(CRIADO)
+  responsibleId String
+  responsible   User       @relation("TaskResponsible", fields: [responsibleId], references: [id])
+  createdById   String
+  createdBy     User       @relation("TaskCreator", fields: [createdById], references: [id])
+  // E-mail de quem pediu a tarefa. Se pertencer a um usuário cadastrado, a
+  // interface mostra o nome dele (busca pelo e-mail na hora de exibir).
+  requesterEmail String?
+  dueAt         DateTime?  @db.Timestamptz(3)
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+  startedAt     DateTime?  @db.Timestamptz(3)
+  completedAt   DateTime?  @db.Timestamptz(3)
+  canceledAt    DateTime?  @db.Timestamptz(3)
+
+  email   EmailSource?
+  notes   TaskNote[]
+  history TaskHistory[]
+
+  @@index([responsibleId, status])
+  @@index([createdById])
+  @@index([requesterEmail])
+  @@index([status])
+  @@index([createdAt])
+  @@index([dueAt])
+}
+
+// Metadados do e-mail que originou a tarefa (sem o corpo da mensagem).
+model EmailSource {
+  taskId         Int      @id
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  gmailMessageId String
+  threadId       String?
+  subject        String
+  sender         String
+  recipients     String[]
+  emailDate      DateTime? @db.Timestamptz(3)
+  link           String
+  mailbox        String   // conta Gmail de onde o e-mail foi importado
+  direction      String   // RECEBIDO | ENVIADO
+
+  @@index([gmailMessageId])
+}
+
+model TaskNote {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  text      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([taskId])
+}
+
+// Trilha de auditoria: toda alteração relevante gera um registro, na mesma
+// transação da alteração.
+model TaskHistory {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  action    String   // CRIACAO | STATUS | EDICAO | ATRIBUICAO | OBSERVACAO
+  field     String?
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([taskId, createdAt])
+}
