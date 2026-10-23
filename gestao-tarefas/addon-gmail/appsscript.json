@@ -1,0 +1,33 @@
+{
+  "timeZone": "America/Sao_Paulo",
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.metadata",
+    "https://www.googleapis.com/auth/gmail.addons.current.action.compose",
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid"
+  ],
+  "urlFetchWhitelist": ["https://gestao-tarefas-1014439328942.southamerica-east1.run.app/"],
+  "addOns": {
+    "common": {
+      "name": "Tarefas ADEMP",
+      "logoUrl": "https://gestao-tarefas-1014439328942.southamerica-east1.run.app/addon-logo.png",
+      "layoutProperties": {
+        "primaryColor": "#025148",
+        "secondaryColor": "#018373"
+      }
+    },
+    "gmail": {
+      "homepageTrigger": { "runFunction": "onHomepage" },
+      "contextualTriggers": [{ "unconditional": {}, "onTriggerFunction": "onGmailMessageOpen" }],
+      "composeTrigger": {
+        "selectActions": [{ "text": "Tarefas ADEMP", "runFunction": "onComposeAction" }],
+        "draftAccess": "METADATA"
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+# PostgreSQL local para desenvolvimento
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: tarefas
+      POSTGRES_PASSWORD: tarefas
+      POSTGRES_DB: tarefas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

@@ -1,0 +1,36 @@
+{
+  "name": "gestao-tarefas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gestão de tarefas integrada ao Gmail (Google Workspace)",
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "exceljs": "4.4.0",
+    "google-auth-library": "11.3.1",
+    "next": "16.4.2",
+    "next-auth": "5.0.0-beta.32",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "prisma": "6.19.3",
+    "tailwindcss": "4.3.3",
+    "typescript": "~5.9.0",
+    "vitest": "5.0.5"
+  }
+}

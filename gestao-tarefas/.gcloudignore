@@ -1,0 +1,15 @@
+# Arquivos que NÃO são enviados ao Google Cloud na publicação.
+# Segredos ficam no Secret Manager, nunca no código enviado.
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+.git/
+.claude/
+tests/
+addon-gmail/
+*.log
+*.tsbuildinfo
+extensao-chrome/
+loja-chrome/
