@@ -2,7 +2,7 @@ import { extractEmail } from "./address";
 import { prisma } from "./db";
 import { Actor, canViewTask, isAdmin } from "./permissions";
 import { allowedTransitions, STATUS_LABEL } from "./status";
-import { changeStatus, createTask, ServiceError, taskInclude, type EmailSourceInput } from "./task-service";
+import { addNote, changeStatus, createTask, handoffTask, ServiceError, taskInclude, type EmailSourceInput } from "./task-service";
 import { elapsedMs, formatDuration, isOverdue, type TaskStatusValue } from "./time";
 
 // Fluxo dos botões do complemento do Gmail. Todo e-mail "nasce" como Nova:
@@ -32,6 +32,7 @@ export async function emailTaskSummary(actor: Actor, gmailMessageId: string, bas
     elapsed: formatDuration(elapsedMs(t, now)),
     overdue: isOverdue(t, now),
     responsible: t.responsible.name,
+    responsibleId: t.responsibleId,
     url: `${baseUrl}/tarefas/${t.id}`,
     allowed: allowedTransitions(status, isAdmin(actor)).filter((s) => EMAIL_ACTIONS.includes(s)),
   };
@@ -75,4 +76,63 @@ export async function applyEmailAction(actor: Actor, input: EmailActionInput): P
   }
   if (task.status !== input.to) await changeStatus(actor, task.id, input.to, input.note ?? undefined);
   return task.id;
+}
+
+/** Tarefa (a mais recente) ligada à conversa (thread) da caixa do usuário. */
+export async function taskForThread(actor: Actor & { email: string }, threadId: string) {
+  const tasks = await prisma.task.findMany({
+    where: { email: { threadId, mailbox: actor.email } },
+    include: taskInclude,
+    orderBy: { id: "desc" },
+  });
+  return tasks.find((t) => canViewTask(actor, t)) ?? null;
+}
+
+export interface AssignInput {
+  responsibleId: string;
+  /** Metadados do e-mail, quando foi possível lê-lo (permite criar a tarefa). */
+  email?: EmailSourceInput | null;
+  messageId?: string | null;
+  threadId?: string | null;
+  /** true = "Encaminhar e atribuir": a tarefa fica "Aberta" para o novo responsável. */
+  reopen: boolean;
+  note?: string | null;
+}
+
+/**
+ * Atribui a tarefa do e-mail a um usuário. Procura a tarefa pela mensagem e,
+ * se não achar, pela conversa. Se o e-mail ainda é "Nova" (sem tarefa), cria
+ * a tarefa já "Aberta" com o novo responsável. Devolve o id da tarefa.
+ */
+export async function assignEmailTask(actor: Actor & { email: string }, input: AssignInput): Promise<number> {
+  const messageId = input.email?.gmailMessageId ?? input.messageId ?? null;
+  const threadId = input.email?.threadId ?? input.threadId ?? null;
+  let task = messageId ? await taskForMessage(actor, messageId) : null;
+  if (!task && threadId) task = await taskForThread(actor, threadId);
+
+  if (task) {
+    await handoffTask(actor, task.id, input.responsibleId, { reopen: input.reopen, note: input.note });
+    return task.id;
+  }
+  if (!input.email) {
+    throw new ServiceError("Não encontrei a tarefa deste e-mail. Abra o e-mail original, clique em \"Abrir tarefa\" e depois encaminhe.");
+  }
+  const now = new Date();
+  const arrived = input.email.emailDate && input.email.emailDate <= now ? input.email.emailDate : now;
+  const created = await createTask(
+    actor,
+    {
+      title: (input.email.subject || "(sem assunto)").slice(0, 200).padEnd(3, "."),
+      description: "",
+      responsibleId: input.responsibleId,
+      requesterEmail: extractEmail(input.email.sender) || input.email.mailbox,
+      createdAt: arrived,
+      dueAt: null,
+      status: "ABERTA",
+      completedAt: null,
+    },
+    input.email,
+  );
+  if (input.note?.trim()) await addNote(actor, created.id, input.note);
+  return created.id;
 }

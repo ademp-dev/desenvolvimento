@@ -8,7 +8,7 @@ import { findTasks } from "@/lib/queries";
 import { parseFilters } from "@/lib/filters";
 import { reportRows, toXlsx } from "@/lib/export";
 import { statsByUser } from "@/lib/stats";
-import { applyEmailAction, emailTaskSummary } from "@/lib/email-task";
+import { applyEmailAction, assignEmailTask, emailTaskSummary } from "@/lib/email-task";
 
 const run = process.env.RUN_DB_TESTS === "1";
 
@@ -180,6 +180,46 @@ describe.runIf(run)("integração com o banco", () => {
     expect((await getTaskForUser(ana, id2))?.startedAt).toBeInstanceOf(Date);
     await applyEmailAction(ana, { to: "CANCELADO", note: "Duplicado", email: e2 });
     expect((await getTaskForUser(ana, id2))?.notes[0].text).toBe("Duplicado");
+  });
+
+  it("atribuir e encaminhar-e-atribuir passam a tarefa adiante", async () => {
+    const base = {
+      threadId: "19fedcba00998877",
+      subject: "Ofício urgente",
+      sender: "Órgão <orgao@gov.br>",
+      recipients: ["ana@ex.org"],
+      emailDate: new Date(Date.now() - 3_600_000),
+      mailbox: "ana@ex.org",
+      direction: "RECEBIDO" as const,
+    };
+    const e1 = { ...base, gmailMessageId: "19fedcba00998877", link: "https://mail.google.com/mail/?authuser=ana%40ex.org#all/19fedcba00998877" };
+
+    // E-mail "Nova" atribuído pela extensão: cria a tarefa já Aberta para o colega.
+    const id = await assignEmailTask(ana, { responsibleId: bia.id, email: e1, reopen: false });
+    let t = await getTaskForUser(ana, id);
+    expect(t?.status).toBe("ABERTA");
+    expect(t?.responsibleId).toBe(bia.id);
+    expect(t?.createdById).toBe(ana.id); // quem atribuiu continua vendo
+
+    // Bia inicia; Ana reatribui pela extensão (sem reabrir): status continua Em andamento.
+    await changeStatus(bia, id, "EM_ANDAMENTO");
+    await assignEmailTask(ana, { responsibleId: chefe.id, messageId: e1.gmailMessageId, reopen: false });
+    t = await getTaskForUser(ana, id);
+    expect([t?.status, t?.responsibleId]).toEqual(["EM_ANDAMENTO", chefe.id]);
+
+    // "Encaminhar e atribuir" achando a tarefa só pela conversa (thread): volta a Aberta para o novo responsável.
+    await assignEmailTask(ana, { responsibleId: bia.id, threadId: base.threadId, reopen: true, note: "Por favor, verifique" });
+    t = await getTaskForUser(ana, id);
+    expect([t?.status, t?.responsibleId]).toEqual(["ABERTA", bia.id]);
+    expect(t?.notes[0].text).toBe("Por favor, verifique");
+    expect(t?.history.filter((h) => h.action === "ATRIBUICAO").length).toBe(2);
+
+    // Sem tarefa e sem metadados do e-mail: mensagem clara.
+    await expect(assignEmailTask(ana, { responsibleId: bia.id, threadId: "19aaaaaaaaaaaaaa", reopen: true })).rejects.toThrow(/Abrir tarefa/);
+
+    // Tarefa encerrada não é atribuída.
+    await changeStatus(bia, id, "CONCLUIDO");
+    await expect(assignEmailTask(ana, { responsibleId: chefe.id, messageId: e1.gmailMessageId, reopen: true })).rejects.toThrow(/encerrada/);
   });
 
   it("usuário avança Nova → Aberta → Em andamento; não volta", async () => {

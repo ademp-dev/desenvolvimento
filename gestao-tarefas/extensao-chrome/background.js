@@ -29,6 +29,8 @@ async function handle(msg) {
     return call('GET', '/api/ext/context?' + q.toString());
   }
   if (msg.type === 'status') return call('POST', '/api/ext/status', msg.body);
+  if (msg.type === 'users') return call('GET', '/api/ext/users?' + new URLSearchParams({ mailbox: msg.mailbox || '' }).toString());
+  if (msg.type === 'assign') return call('POST', '/api/ext/assign', msg.body);
   if (msg.type === 'open') {
     // Só abre endereços do próprio app.
     const url = typeof msg.url === 'string' && msg.url.startsWith(APP_URL) ? msg.url : APP_URL;

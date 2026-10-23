@@ -3,6 +3,7 @@ import { AddonAuthError, authenticateAddon } from "@/lib/addon-auth";
 import { appBaseUrl } from "@/lib/config";
 import { prisma } from "@/lib/db";
 import { STATUS_LABEL } from "@/lib/status";
+import { assignableUsers } from "@/lib/task-service";
 import { elapsedMs, formatDateTime, formatDuration, isOverdue, OPEN_STATUSES, type TaskStatusValue } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,9 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json({
-      user: { name: user.name, email: user.email },
+      user: { id: user.id, name: user.name, email: user.email },
+      // Para o "Encaminhar e atribuir" da janela de escrever.
+      users: await assignableUsers(),
       appUrl: base,
       counts,
       total: open.length,

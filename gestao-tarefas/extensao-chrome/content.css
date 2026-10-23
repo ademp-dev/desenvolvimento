@@ -1,37 +1,53 @@
-/* Barra de tarefas dentro do e-mail — visual alinhado ao Gmail (Material 3). */
+/*
+ * Barra de tarefas dentro do e-mail: discreta, no estilo da barra de ícones
+ * do Gmail (Material 3). Tudo prefixado/escopado para não afetar o Gmail.
+ */
 #tarefas-ademp-bar {
-  display: flex;
+  display: inline-flex !important;
+  flex-direction: row !important;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin: 6px 0 10px;
-  padding: 8px 12px;
-  border-radius: 16px;
-  background: #f2f6fc;
-  font: 500 13px/1.2 "Google Sans", Roboto, Arial, sans-serif;
-  color: #1f1f1f;
+  gap: 2px;
+  width: auto !important;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0 12px;
+  padding: 2px 6px 2px 8px;
+  border: 1px solid #f1dc8f;
+  border-radius: 20px;
+  background: #fff3c2;
+  font: 500 12px/1 "Google Sans", Roboto, Arial, sans-serif;
+  color: #444746;
+  position: relative;
+  z-index: 2;
+  white-space: nowrap;
 }
+
+#tarefas-ademp-bar svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  display: block;
+}
+
+/* Marca */
 #tarefas-ademp-bar .ta-brand {
+  display: inline-flex;
   color: #0b57d0;
-  font-weight: 700;
-  margin-right: 4px;
+  margin-right: 6px;
 }
-#tarefas-ademp-bar .ta-muted {
-  color: #5f6368;
-  font-weight: 400;
+#tarefas-ademp-bar .ta-brand img {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
-#tarefas-ademp-bar .ta-error {
-  color: #b3261e;
-  font-weight: 400;
-}
-#tarefas-ademp-bar .ta-late {
-  color: #d93025;
-  font-weight: 700;
-}
+
+/* Status e informações */
 #tarefas-ademp-bar .ta-chip {
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: 6px;
+  padding: 4px 8px;
   font-size: 12px;
+  margin-right: 6px;
 }
 #tarefas-ademp-bar .ta-CRIADO { background: #c2e7ff; color: #001d35; }
 #tarefas-ademp-bar .ta-ABERTA { background: #ffe2a8; color: #5c3c00; }
@@ -39,26 +55,133 @@
 #tarefas-ademp-bar .ta-CONCLUIDO { background: #c4eed0; color: #0d652d; }
 #tarefas-ademp-bar .ta-CANCELADO { background: #e3e3e3; color: #5f6368; text-decoration: line-through; }
 
-#tarefas-ademp-bar .ta-btn {
+#tarefas-ademp-bar .ta-muted { color: #5f6368; font-weight: 400; margin-right: 4px; }
+#tarefas-ademp-bar .ta-error { color: #b3261e; font-weight: 400; margin-right: 4px; white-space: normal; }
+#tarefas-ademp-bar .ta-late {
+  color: #b3261e;
+  background: #fce8e6;
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin-right: 4px;
+}
+
+#tarefas-ademp-bar .ta-sep {
+  width: 1px;
+  height: 20px;
+  background: #ead38a;
+  margin: 0 6px;
+}
+
+/* Botões de ícone (32×32, redondos), iguais aos da barra do Gmail */
+#tarefas-ademp-bar .ta-icon {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  width: 32px;
   height: 32px;
-  padding: 0 16px;
-  border-radius: 16px;
-  border: 1px solid transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #444746;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+#tarefas-ademp-bar .ta-icon:hover { background: rgba(68, 71, 70, 0.08); }
+#tarefas-ademp-bar .ta-icon:focus-visible { outline: 2px solid #0b57d0; outline-offset: 1px; }
+
+/* Cores ao passar o mouse, por ação */
+#tarefas-ademp-bar .act-open:hover,
+#tarefas-ademp-bar .act-play:hover { color: #0b57d0; background: rgba(11, 87, 208, 0.08); }
+#tarefas-ademp-bar .act-done:hover { color: #188038; background: rgba(24, 128, 56, 0.08); }
+#tarefas-ademp-bar .act-cancel:hover { color: #b3261e; background: rgba(179, 38, 30, 0.08); }
+#tarefas-ademp-bar .act-assign:hover { color: #025148; background: rgba(2, 81, 72, 0.1); }
+
+/* Menu "Atribuir a" — no estilo dos menus do Gmail */
+#tarefas-ademp-menu {
+  position: fixed;
+  z-index: 99999;
+  width: 280px;
+  max-height: 340px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 6px 2px rgba(60, 64, 67, 0.15), 0 1px 2px rgba(60, 64, 67, 0.3);
+  font: 400 14px/1.3 "Google Sans", Roboto, Arial, sans-serif;
+  color: #1f1f1f;
+}
+#tarefas-ademp-menu .ta-menu-title {
+  padding: 6px 16px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5f6368;
+}
+#tarefas-ademp-menu .ta-menu-list { overflow-y: auto; }
+#tarefas-ademp-menu .ta-menu-empty { padding: 8px 16px; color: #5f6368; }
+#tarefas-ademp-menu .ta-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 16px;
+  border: 0;
+  background: transparent;
+  text-align: left;
   cursor: pointer;
   font: inherit;
-  transition: box-shadow 0.15s, background 0.15s;
+  color: inherit;
 }
-#tarefas-ademp-bar .ta-btn.primary { background: #0b57d0; color: #fff; }
-#tarefas-ademp-bar .ta-btn.success { background: #188038; color: #fff; }
-#tarefas-ademp-bar .ta-btn.danger { background: #fff; color: #b3261e; border-color: #747775; }
-#tarefas-ademp-bar .ta-btn.text { background: transparent; color: #0b57d0; padding: 0 10px; }
-#tarefas-ademp-bar .ta-btn:hover { box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15); }
-#tarefas-ademp-bar .ta-btn.text:hover { background: rgba(11, 87, 208, 0.08); box-shadow: none; }
-#tarefas-ademp-bar .ta-ic { font-size: 12px; }
+#tarefas-ademp-menu .ta-menu-item:hover,
+#tarefas-ademp-menu .ta-menu-item:focus-visible { background: #f1f3f4; outline: none; }
+#tarefas-ademp-menu .ta-menu-item.current { background: #e6f4f1; }
+#tarefas-ademp-menu .ta-avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #018373;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 500;
+  font-size: 13px;
+}
+#tarefas-ademp-menu .ta-menu-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+#tarefas-ademp-menu .ta-menu-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tarefas-ademp-menu .ta-menu-mail { font-size: 12px; color: #5f6368; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tarefas-ademp-menu .ta-menu-check { color: #018373; font-weight: 700; }
 
+/* Próxima ação sugerida: destaque sutil (tom azul do Gmail) */
+#tarefas-ademp-bar .act-next { color: #0b57d0; background: #d3e3fd; }
+#tarefas-ademp-bar .act-next:hover { background: #c2d7f8; }
+#tarefas-ademp-bar .act-done.act-next { color: #0d652d; background: #c4eed0; }
+
+/* Dica ao passar o mouse, no estilo do Gmail */
+#tarefas-ademp-bar .ta-icon[data-tip]:hover::after,
+#tarefas-ademp-bar .ta-icon[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #3c4043;
+  color: #fff;
+  font: 400 12px/1.2 Roboto, Arial, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#tarefas-ademp-bar .ta-icon[aria-expanded="true"]::after { display: none; }
+#tarefas-ademp-bar .ta-icon[aria-expanded="true"] { color: #025148; background: rgba(2, 81, 72, 0.12); }
+
+/* Aviso rápido (canto inferior esquerdo), como o "Mensagem enviada" do Gmail */
 #tarefas-ademp-toast {
   position: fixed;
   left: 24px;

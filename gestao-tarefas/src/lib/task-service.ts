@@ -222,6 +222,44 @@ export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue
   });
 }
 
+/**
+ * Passa a tarefa para outro usuário (botões "Atribuir" e "Encaminhar e
+ * atribuir"). Com `reopen`, a tarefa volta a "Aberta" para o novo
+ * responsável — é uma passagem de bastão, não uma volta no fluxo, por isso
+ * não segue a regra de transições de status. Tarefas encerradas não mudam.
+ */
+export async function handoffTask(actor: Actor, id: number, responsibleId: string, opts: { reopen: boolean; note?: string | null }) {
+  const task = await loadEditable(actor, id);
+  const from = task.status as TaskStatusValue;
+  if (!isOpen(from)) throw new ServiceError("Tarefa encerrada: não pode ser atribuída. Um administrador pode reabri-la no app.");
+  const responsible = await activeUser(responsibleId);
+  const changeResponsible = responsible.id !== task.responsibleId;
+  const toStatus: TaskStatusValue = opts.reopen ? "ABERTA" : from;
+  const changeStatusNow = toStatus !== from;
+  const text = opts.note?.trim().slice(0, 5000);
+  if (!changeResponsible && !changeStatusNow && !text) return task;
+
+  const now = new Date();
+  return prisma.$transaction(async (tx) => {
+    const res = await tx.task.updateMany({
+      where: { id, status: from },
+      data: { responsibleId: responsible.id, status: toStatus, ...(changeStatusNow ? statusTimestamps(toStatus, now, task.startedAt) : {}) },
+    });
+    if (res.count === 0) throw new ServiceError("A tarefa foi alterada por outra pessoa. Recarregue.");
+    if (changeResponsible) {
+      await tx.taskHistory.create({
+        data: { taskId: id, authorId: actor.id, action: "ATRIBUICAO", field: "Responsável", oldValue: userLabel(task.responsible), newValue: userLabel(responsible), createdAt: now },
+      });
+    }
+    if (changeStatusNow) {
+      await tx.taskHistory.create({
+        data: { taskId: id, authorId: actor.id, action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[toStatus], createdAt: now },
+      });
+    }
+    if (text) await tx.taskNote.create({ data: { taskId: id, authorId: actor.id, text, createdAt: now } });
+  });
+}
+
 export async function addNote(actor: Actor, id: number, rawText: string) {
   const text = rawText.trim();
   if (!text) throw new ServiceError("Escreva a observação");
