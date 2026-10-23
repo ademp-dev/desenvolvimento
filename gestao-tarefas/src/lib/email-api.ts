@@ -14,6 +14,9 @@ export const emailStatusBodySchema = z.object({
   responsibleId: z.string().optional().nullable(),
   requesterEmail: z.string().max(320).optional().nullable(),
   dueAt: z.string().optional().nullable(), // "YYYY-MM-DD" (horário de Brasília)
+  // Só em "Concluir": início e fim da execução, em ISO 8601 (instante absoluto).
+  startedAt: z.string().max(40).optional().nullable(),
+  completedAt: z.string().max(40).optional().nullable(),
   email: z.object({
     gmailMessageId: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
     threadId: z.string().max(128).nullable().optional(),
@@ -69,11 +72,20 @@ export async function runAssign(user: Actor & { email: string }, raw: unknown, b
   return { taskId, task: messageId ? await emailTaskSummary(user, messageId, baseUrl) : null };
 }
 
+function isoDate(value: string | null | undefined, error: string): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) throw new BadRequest(error);
+  return d;
+}
+
 /** Aplica o botão e devolve o resumo atualizado da tarefa. A caixa é sempre a do usuário autenticado. */
 export async function runEmailStatus(user: Actor & { email: string }, raw: unknown, baseUrl: string) {
   const body = emailStatusBodySchema.parse(raw);
   const dueAt = body.dueAt ? parseLocalDateTime(body.dueAt) : null;
   if (body.dueAt && !dueAt) throw new BadRequest("Prazo inválido");
+  const startedAt = isoDate(body.startedAt, "Início inválido");
+  const completedAt = isoDate(body.completedAt, "Fim inválido");
   const emailDate = body.email.emailDate ? new Date(body.email.emailDate) : null;
 
   await applyEmailAction(user, {
@@ -83,6 +95,7 @@ export async function runEmailStatus(user: Actor & { email: string }, raw: unkno
     responsibleId: body.responsibleId,
     requesterEmail: body.requesterEmail,
     dueAt,
+    period: body.to === "CONCLUIDO" ? { startedAt, completedAt } : undefined,
     email: {
       gmailMessageId: body.email.gmailMessageId,
       threadId: body.email.threadId ?? null,

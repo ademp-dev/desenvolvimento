@@ -51,6 +51,9 @@ export async function saveTaskAction(_prev: FormState, fd: FormData): Promise<Fo
       const completedRaw = str(fd, "completedAt");
       const completedAt = status === "CONCLUIDO" ? parseLocalDateTime(completedRaw) : null;
       if (status === "CONCLUIDO" && !completedAt) return { error: "Data da conclusão inválida" };
+      const startedRaw = status === "CONCLUIDO" ? str(fd, "startedAt") : "";
+      const startedAt = startedRaw ? parseLocalDateTime(startedRaw) : null;
+      if (startedRaw && !startedAt) return { error: "Data do início inválida" };
 
       // Os metadados do e-mail são buscados de novo no Gmail do próprio
       // usuário — não confiamos no que veio do navegador.
@@ -60,7 +63,7 @@ export async function saveTaskAction(_prev: FormState, fd: FormData): Promise<Fo
         const { snippet: _snippet, ...metadata } = await getMessage(user.id, user.email, gmailId);
         email = metadata;
       }
-      taskId = (await createTask(user, { ...input, status, completedAt }, email)).id;
+      taskId = (await createTask(user, { ...input, status, completedAt, startedAt }, email)).id;
     }
   } catch (e) {
     return { error: errorMessage(e) };
@@ -74,8 +77,16 @@ export async function changeStatusAction(_prev: FormState, fd: FormData): Promis
   const id = Number(fd.get("id"));
   const to = str(fd, "status") as TaskStatusValue;
   if (!STATUS_ORDER.includes(to)) return { error: "Status inválido" };
+  let period;
+  if (to === "CONCLUIDO") {
+    const startedAt = parseLocalDateTime(str(fd, "startedAt"));
+    const completedAt = parseLocalDateTime(str(fd, "completedAt"));
+    if (!startedAt) return { error: "Informe a data-hora inicial" };
+    if (!completedAt) return { error: "Informe a data-hora final" };
+    period = { startedAt, completedAt };
+  }
   try {
-    await changeStatus(user, id, to, str(fd, "note"));
+    await changeStatus(user, id, to, str(fd, "note"), period);
   } catch (e) {
     return { error: errorMessage(e) };
   }

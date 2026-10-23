@@ -3,7 +3,7 @@
 import { useActionState, useRef, useState } from "react";
 import { addNoteAction, changeStatusAction, type FormState } from "@/app/(app)/tarefas/actions";
 import { isBackward, STATUS_LABEL } from "@/lib/status";
-import { isOpen, type TaskStatusValue } from "@/lib/time";
+import { isOpen, toLocalInputValue, type TaskStatusValue } from "@/lib/time";
 
 const BUTTON_LABEL: Record<TaskStatusValue, string> = {
   CRIADO: "Nova",
@@ -18,9 +18,27 @@ function buttonLabel(current: TaskStatusValue, to: TaskStatusValue) {
   return BUTTON_LABEL[to];
 }
 
-export function StatusActions({ id, current, allowed }: { id: number; current: TaskStatusValue; allowed: TaskStatusValue[] }) {
+interface StatusActionsProps {
+  id: number;
+  current: TaskStatusValue;
+  allowed: TaskStatusValue[];
+  /** Quando a tarefa foi iniciada (ISO), para sugerir o início ao concluir. */
+  startedAt?: string | null;
+}
+
+export function StatusActions({ id, current, allowed, startedAt }: StatusActionsProps) {
   const [state, action, pending] = useActionState<FormState, FormData>(changeStatusAction, {});
   const [target, setTarget] = useState<TaskStatusValue | null>(null);
+  // Sugestão ao concluir: início = quando foi iniciada (ou agora); fim = agora. Ambos editáveis.
+  const [period, setPeriod] = useState({ start: "", end: "" });
+
+  function choose(s: TaskStatusValue) {
+    if (s === "CONCLUIDO") {
+      const now = toLocalInputValue(new Date());
+      setPeriod({ start: toLocalInputValue(startedAt) || now, end: now });
+    }
+    setTarget(s);
+  }
 
   if (allowed.length === 0) {
     return <p className="text-sm text-ink-3">Tarefa encerrada ({STATUS_LABEL[current]}). Somente um administrador pode reabri-la.</p>;
@@ -33,7 +51,7 @@ export function StatusActions({ id, current, allowed }: { id: number; current: T
           <button
             key={s}
             type="button"
-            onClick={() => setTarget(s)}
+            onClick={() => choose(s)}
             className={
               s === "CANCELADO"
                 ? "btn-danger"
@@ -52,6 +70,40 @@ export function StatusActions({ id, current, allowed }: { id: number; current: T
         <form action={action} className="space-y-2 rounded-lg border border-line bg-[#f2f6fc] p-3">
           <input type="hidden" name="id" value={id} />
           <input type="hidden" name="status" value={target} />
+          {target === "CONCLUIDO" && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label className="label" htmlFor="status-start">
+                  Data-hora inicial *
+                </label>
+                <input
+                  id="status-start"
+                  name="startedAt"
+                  type="datetime-local"
+                  required
+                  max={period.end}
+                  value={period.start}
+                  onChange={(e) => setPeriod({ ...period, start: e.target.value })}
+                  className="input"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="status-end">
+                  Data-hora final *
+                </label>
+                <input
+                  id="status-end"
+                  name="completedAt"
+                  type="datetime-local"
+                  required
+                  min={period.start}
+                  value={period.end}
+                  onChange={(e) => setPeriod({ ...period, end: e.target.value })}
+                  className="input"
+                />
+              </div>
+            </div>
+          )}
           <label className="label" htmlFor="status-note">
             Mudar para “{STATUS_LABEL[target]}” — observação {target === "CANCELADO" ? "(motivo)" : "(opcional)"}
           </label>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tarefas ADEMP para Gmail",
-  "version": "1.7.0",
+  "version": "1.8.1",
   "description": "Uso interno da ADEMP: botões de tarefa (Abrir, Play, Concluir, Cancelar, Atribuir) dentro dos e-mails do Gmail.",
   "homepage_url": "https://gestao-tarefas-1014439328942.southamerica-east1.run.app/suporte",
   "icons": {

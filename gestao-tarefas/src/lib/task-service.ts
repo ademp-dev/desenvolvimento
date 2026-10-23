@@ -26,6 +26,8 @@ export type TaskInput = z.infer<typeof taskInputSchema>;
 export const createTaskSchema = taskInputSchema.extend({
   status: z.enum(INITIAL_STATUSES as [TaskStatusValue, ...TaskStatusValue[]]),
   completedAt: z.date().nullable(),
+  /** Início da execução (só para status Concluída); vazio = data da criação. */
+  startedAt: z.date().nullable().optional(),
 });
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 
@@ -108,13 +110,16 @@ export async function createTask(actor: Actor, rawInput: CreateTaskInput, rawEma
 
   assertNotFuture(input.createdAt, "A data de criação");
   let completedAt: Date | null = null;
+  let startedAt: Date | null = input.status === "EM_ANDAMENTO" ? input.createdAt : null;
   if (input.status === "CONCLUIDO") {
     if (!input.completedAt) throw new ServiceError("Informe a data de conclusão");
     assertNotFuture(input.completedAt, "A data de conclusão");
     if (input.completedAt < input.createdAt) throw new ServiceError("A conclusão não pode ser anterior à criação");
     completedAt = input.completedAt;
+    startedAt = input.startedAt ?? input.createdAt;
+    if (startedAt < input.createdAt) throw new ServiceError("O início não pode ser anterior à criação");
+    if (startedAt > completedAt) throw new ServiceError("O início não pode ser depois da conclusão");
   }
-  const startedAt = input.status === "EM_ANDAMENTO" || input.status === "CONCLUIDO" ? input.createdAt : null;
   const now = new Date();
   const backdated = now.getTime() - input.createdAt.getTime() > 5 * 60_000;
 
@@ -197,7 +202,25 @@ export async function updateTask(actor: Actor, id: number, rawInput: TaskInput) 
   });
 }
 
-export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue, note?: string) {
+/** Início e fim da execução informados ao concluir (vazios = valores padrão). */
+export interface ExecutionPeriod {
+  startedAt?: Date | null;
+  completedAt?: Date | null;
+}
+
+/**
+ * Período de execução gravado na conclusão. Padrão: início = quando a tarefa
+ * foi iniciada (Play) e fim = agora; o usuário pode informar outros valores.
+ */
+function executionPeriod(task: { startedAt: Date | null }, now: Date, period?: ExecutionPeriod) {
+  const completedAt = period?.completedAt ?? now;
+  const startedAt = period?.startedAt ?? task.startedAt ?? completedAt;
+  assertNotFuture(completedAt, "O fim");
+  if (startedAt > completedAt) throw new ServiceError("O início não pode ser depois do fim");
+  return { startedAt, completedAt };
+}
+
+export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue, note?: string, period?: ExecutionPeriod) {
   const task = await loadEditable(actor, id);
   const from = task.status as TaskStatusValue;
   if (!canTransition(from, to, isAdmin(actor))) {
@@ -205,17 +228,30 @@ export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue
   }
   const now = new Date();
   const text = note?.trim().slice(0, 5000);
+  const execution = to === "CONCLUIDO" ? executionPeriod(task, now, period) : null;
 
   return prisma.$transaction(async (tx) => {
     // Só aplica se o status ainda for o lido (evita corrida entre duas abas).
     const res = await tx.task.updateMany({
       where: { id, status: from },
-      data: { status: to, ...statusTimestamps(to, now, task.startedAt) },
+      data: { status: to, ...statusTimestamps(to, now, task.startedAt), ...(execution ?? {}) },
     });
     if (res.count === 0) throw new ServiceError("A tarefa foi alterada por outra pessoa. Recarregue a página.");
     await tx.taskHistory.create({
       data: { taskId: id, authorId: actor.id, action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[to], createdAt: now },
     });
+    if (execution) {
+      await tx.taskHistory.create({
+        data: {
+          taskId: id,
+          authorId: actor.id,
+          action: "EDICAO",
+          field: "Execução",
+          newValue: `${formatDateTime(execution.startedAt)} até ${formatDateTime(execution.completedAt)}`,
+          createdAt: now,
+        },
+      });
+    }
     if (text) {
       await tx.taskNote.create({ data: { taskId: id, authorId: actor.id, text, createdAt: now } });
     }

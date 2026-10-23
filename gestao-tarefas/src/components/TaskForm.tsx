@@ -140,12 +140,21 @@ export function TaskForm({ users, initial, nowLocal, gmailMessageId, cancelHref,
             </select>
           </div>
           {status === "CONCLUIDO" && (
-            <div>
-              <label className="label" htmlFor="completedAt">
-                Data da conclusão *
-              </label>
-              <input id="completedAt" name="completedAt" type="datetime-local" required max={nowLocal} defaultValue={nowLocal} className="input" />
-            </div>
+            <>
+              <div>
+                <label className="label" htmlFor="startedAt">
+                  Data-hora inicial *
+                </label>
+                <input id="startedAt" name="startedAt" type="datetime-local" required max={nowLocal} defaultValue={initial.createdAt} className="input" />
+                <p className="mt-1 text-xs text-ink-3">Quando a execução começou.</p>
+              </div>
+              <div>
+                <label className="label" htmlFor="completedAt">
+                  Data-hora final *
+                </label>
+                <input id="completedAt" name="completedAt" type="datetime-local" required max={nowLocal} defaultValue={nowLocal} className="input" />
+              </div>
+            </>
           )}
         </div>
       )}
