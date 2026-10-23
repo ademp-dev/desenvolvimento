@@ -90,6 +90,29 @@ describe.runIf(run)("integração com o banco", () => {
     expect(reopened?.completedAt).toBeNull();
   });
 
+  it("concluir com data-hora inicial e final informadas", async () => {
+    const created = new Date(Date.now() - 10 * 3_600_000);
+    const t = await createTask(ana, { ...nova(), createdAt: created, status: "ABERTA", title: "Com período", description: "", responsibleId: ana.id, dueAt: null });
+    const start = new Date(Date.now() - 6 * 3_600_000);
+    const end = new Date(Date.now() - 2 * 3_600_000);
+    await expect(changeStatus(ana, t.id, "CONCLUIDO", undefined, { startedAt: end, completedAt: start })).rejects.toThrow(/início/);
+    await expect(changeStatus(ana, t.id, "CONCLUIDO", undefined, { startedAt: start, completedAt: new Date(Date.now() + 3_600_000) })).rejects.toThrow(/futuro/);
+    await changeStatus(ana, t.id, "CONCLUIDO", undefined, { startedAt: start, completedAt: end });
+    const done = await getTaskForUser(ana, t.id);
+    expect(done?.startedAt?.getTime()).toBe(start.getTime());
+    expect(done?.completedAt?.getTime()).toBe(end.getTime());
+    expect(done?.history.some((h) => h.field === "Execução")).toBe(true);
+
+    // Sem período: início = quando foi iniciada (Play); fim = agora.
+    const t2 = await createTask(ana, { ...nova(), title: "Sem período", description: "", responsibleId: ana.id, dueAt: null });
+    await changeStatus(ana, t2.id, "EM_ANDAMENTO");
+    const started = (await getTaskForUser(ana, t2.id))?.startedAt;
+    await changeStatus(ana, t2.id, "CONCLUIDO");
+    const done2 = await getTaskForUser(ana, t2.id);
+    expect(done2?.startedAt?.getTime()).toBe(started?.getTime());
+    expect(done2?.completedAt).toBeInstanceOf(Date);
+  });
+
   it("edição registra cada campo alterado, inclusive reatribuição", async () => {
     const before = await getTaskForUser(ana, 2);
     await updateTask(ana, 2, {

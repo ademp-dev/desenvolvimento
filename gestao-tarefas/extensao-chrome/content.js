@@ -152,8 +152,26 @@
     return el('span', { class: 'ta-sep', 'aria-hidden': 'true' });
   }
 
+  /**
+   * Depois que a extensão é atualizada, a cópia antiga deste script continua na
+   * aba aberta, mas sem acesso à extensão. Ela então se desliga para não
+   * apagar a barra desenhada pela versão nova.
+   */
+  function alive() {
+    try {
+      if (chrome.runtime && chrome.runtime.id) return true;
+    } catch (e) {
+      // contexto da extensão invalidado
+    }
+    observer.disconnect();
+    window.removeEventListener('hashchange', schedule);
+    clearTimeout(pending);
+    current = null;
+    return false;
+  }
+
   function render(state) {
-    if (!current) return;
+    if (!current || !alive()) return;
     var bar = ensureBar(current.info.msgEl);
     bar.textContent = '';
     bar.appendChild(
@@ -191,9 +209,15 @@
       var next = allowed[0]; // próxima ação do fluxo: destaque sutil
       ACTIONS.forEach(function (a) {
         if (allowed.indexOf(a.to) < 0) return;
-        bar.appendChild(iconButton(a.icon, a.tip, a.cls + (a.to === next && a.to !== 'CANCELADO' ? ' act-next' : ''), function () {
-          act(a.to);
-        }));
+        var btn = iconButton(a.icon, a.tip, a.cls + (a.to === next && a.to !== 'CANCELADO' ? ' act-next' : ''), function (ev) {
+          if (a.to === 'CONCLUIDO') {
+            ev.stopPropagation();
+            toggleDoneDialog(btn, task ? task.startedAt : null);
+          } else {
+            act(a.to);
+          }
+        });
+        bar.appendChild(btn);
       });
     }
 
@@ -289,25 +313,106 @@
     });
   }
 
+  // --- Concluir: data-hora inicial e final -------------------------------------
+
+  var DONE_ID = 'tarefas-ademp-done';
+
+  /** Date -> "YYYY-MM-DDTHH:mm" no horário do computador (valor do <input type="datetime-local">). */
+  function toLocalInput(d) {
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+
+  function closeDoneDialog() {
+    var d = document.getElementById(DONE_ID);
+    if (d) d.remove();
+  }
+
+  /**
+   * Abre, abaixo do botão "Concluir", o quadro com início e fim da execução.
+   * Sugestão: início = quando a tarefa foi iniciada (Play) ou agora; fim = agora.
+   */
+  function toggleDoneDialog(anchorBtn, startedAt) {
+    if (document.getElementById(DONE_ID)) {
+      closeDoneDialog();
+      return;
+    }
+    closeAssignMenu();
+    var now = toLocalInput(new Date());
+    var start = el('input', { type: 'datetime-local', id: 'ta-done-start', required: 'required', max: now });
+    start.value = startedAt ? toLocalInput(new Date(startedAt)) : now;
+    var end = el('input', { type: 'datetime-local', id: 'ta-done-end', required: 'required', max: now });
+    end.value = now;
+    var note = el('textarea', { id: 'ta-done-note', rows: '2', maxlength: '5000', placeholder: 'Observação (opcional)' });
+    var error = el('div', { class: 'ta-done-error', role: 'alert' });
+
+    var form = el('form', { id: DONE_ID, 'aria-label': 'Concluir tarefa' }, [
+      el('div', { class: 'ta-menu-title', text: 'Concluir tarefa' }),
+      el('label', { for: 'ta-done-start', text: 'Data-hora inicial' }),
+      start,
+      el('label', { for: 'ta-done-end', text: 'Data-hora final' }),
+      end,
+      note,
+      error,
+      el('div', { class: 'ta-done-actions' }, [
+        el('button', { type: 'button', class: 'ta-btn-text', text: 'Voltar', onclick: closeDoneDialog }),
+        el('button', { type: 'submit', class: 'ta-btn-done', text: 'Concluir' }),
+      ]),
+    ]);
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (!start.value || !end.value) {
+        error.textContent = 'Preencha a data-hora inicial e a final.';
+        return;
+      }
+      if (start.value > end.value) {
+        error.textContent = 'O início não pode ser depois do fim.';
+        return;
+      }
+      closeDoneDialog();
+      act('CONCLUIDO', {
+        note: note.value.trim() || null,
+        startedAt: new Date(start.value).toISOString(),
+        completedAt: new Date(end.value).toISOString(),
+      });
+    });
+
+    var r = anchorBtn.getBoundingClientRect();
+    form.style.top = r.bottom + 6 + 'px';
+    form.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 300)) + 'px';
+    document.body.appendChild(form);
+    start.focus();
+  }
+
   document.addEventListener('click', function (e) {
     var m = document.getElementById('tarefas-ademp-menu');
     if (m && !m.contains(e.target)) closeAssignMenu();
+    var d = document.getElementById(DONE_ID);
+    if (d && !d.contains(e.target)) closeDoneDialog();
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') closeAssignMenu();
+    if (e.key === 'Escape') {
+      closeAssignMenu();
+      closeDoneDialog();
+    }
   });
 
-  function act(to) {
+  /** Muda o status. `extra` (só em Concluir): { note, startedAt, completedAt }. */
+  function act(to, extra) {
     if (!current) return;
-    var note = null;
+    var note = extra ? extra.note : null;
     if (to === 'CANCELADO') {
       note = window.prompt('Motivo do cancelamento:');
       if (!note || !note.trim()) return;
     }
     var info = current.info;
     var key = current.key;
+    var body = { to: to, note: note, mailbox: info.mailbox, email: info.email };
+    if (extra) {
+      body.startedAt = extra.startedAt;
+      body.completedAt = extra.completedAt;
+    }
     render({ loading: true });
-    send({ type: 'status', body: { to: to, note: note, mailbox: info.mailbox, email: info.email } }).then(function (res) {
+    send({ type: 'status', body: body }).then(function (res) {
       if (!current || current.key !== key) return;
       if (res.ok) toast('Status: ' + STATUS_LABEL[to]);
       else toast(res.data && res.data.error ? res.data.error : 'Erro ao mudar o status');
@@ -345,6 +450,7 @@
 
   /** Verifica se o e-mail aberto mudou; se sim, carrega o status. */
   function scan() {
+    if (!alive()) return;
     var info = readOpenMessage();
     if (!info) {
       current = null;
@@ -369,16 +475,17 @@
     pending = setTimeout(scan, 250);
   }
 
-  new MutationObserver(function (mutations) {
+  var observer = new MutationObserver(function (mutations) {
     // Ignora mudanças feitas pela própria barra.
     for (var i = 0; i < mutations.length; i++) {
       var t = mutations[i].target;
-      if (!(t && t.closest && t.closest('#' + BAR_ID + ', #tarefas-ademp-toast, #tarefas-ademp-menu'))) {
+      if (!(t && t.closest && t.closest('#' + BAR_ID + ', #tarefas-ademp-toast, #tarefas-ademp-menu, #' + DONE_ID))) {
         schedule();
         return;
       }
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
   window.addEventListener('hashchange', schedule);
   schedule();
 })();

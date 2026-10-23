@@ -4,6 +4,7 @@
  * Painel lateral (ao abrir um e-mail): status da tarefa e as ações
  *   Abrir tarefa -> Aberta | Play -> Em andamento | Concluir -> Concluída | Cancelar -> Cancelada
  * Todo e-mail começa como "Nova"; a tarefa só é gravada no primeiro clique.
+ * Concluir pede a data-hora inicial e a final (sugeridas, editáveis).
  *
  * Janela de escrever (ícone na barra): resumo das suas tarefas e
  * "Encaminhar e atribuir" — passa a tarefa do e-mail para um colega
@@ -89,6 +90,7 @@ function formValue_(e, name) {
   if (!input) return null;
   if (input.stringInputs) return input.stringInputs.value[0];
   if (input.dateInput) return input.dateInput.msSinceEpoch;
+  if (input.dateTimeInput) return input.dateTimeInput.msSinceEpoch;
   return null;
 }
 
@@ -187,6 +189,9 @@ function buildCard_(msg, task, ctx) {
       .setWrapText(true)
   );
   info.addWidget(CardService.newTextParagraph().setText('<b>' + esc_(task ? task.title : msg.subject) + '</b>'));
+  if (task && task.execution) {
+    info.addWidget(CardService.newTextParagraph().setText('<font color="#5f6368">Execução: ' + esc_(task.execution) + '</font>'));
+  }
   if (task && task.overdue) {
     info.addWidget(CardService.newTextParagraph().setText('<font color="#d93025"><b>⏰ Prazo vencido</b></font>'));
   }
@@ -199,7 +204,12 @@ function buildCard_(msg, task, ctx) {
   var icons = CardService.newButtonSet();
   ACTIONS.forEach(function (a) {
     if (allowed.indexOf(a.to) < 0) return;
-    icons.addButton(iconButton_(a.icon, a.label).setOnClickAction(statusAction_(a.to, msg)));
+    // Concluir abre um cartão para informar a data-hora inicial e a final.
+    var action =
+      a.to === 'CONCLUIDO'
+        ? CardService.newAction().setFunctionName('onConcludeOpen').setParameters({ msg: JSON.stringify(msg), startedAt: (task && task.startedAt) || '' })
+        : statusAction_(a.to, msg);
+    icons.addButton(iconButton_(a.icon, a.label).setOnClickAction(action));
   });
   if (allowed.length) {
     icons.addButton(
@@ -306,6 +316,92 @@ function onPanelAssign(e) {
 
 function onBack(e) {
   return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popCard()).build();
+}
+
+// Horário de Brasília (UTC−3, sem horário de verão) nos seletores de data-hora.
+var BRASILIA_OFFSET_MIN = -180;
+
+/** "Concluir": cartão com data-hora inicial e final (sugeridas, editáveis). */
+function onConcludeOpen(e) {
+  var params = e.commonEventObject.parameters;
+  var msg = JSON.parse(params.msg);
+  var now = Date.now();
+  var started = params.startedAt ? new Date(params.startedAt).getTime() : now;
+  // Campos do cartão principal (usados se a tarefa ainda não existe).
+  var dueMs = formValue_(e, 'dueAt');
+  var fields = {
+    title: formValue_(e, 'title'),
+    responsibleId: formValue_(e, 'responsibleId'),
+    requesterEmail: formValue_(e, 'requesterEmail'),
+    dueAt: dueMs ? new Date(Number(dueMs)).toISOString().slice(0, 10) : null,
+  };
+  var section = CardService.newCardSection()
+    .addWidget(CardService.newTextParagraph().setText('<b>' + esc_(msg.subject) + '</b>'))
+    .addWidget(
+      CardService.newDateTimePicker()
+        .setFieldName('startedAt')
+        .setTitle('Data-hora inicial')
+        .setValueInMsSinceEpoch(started)
+        .setTimeZoneOffsetInMins(BRASILIA_OFFSET_MIN)
+    )
+    .addWidget(
+      CardService.newDateTimePicker()
+        .setFieldName('completedAt')
+        .setTitle('Data-hora final')
+        .setValueInMsSinceEpoch(now)
+        .setTimeZoneOffsetInMins(BRASILIA_OFFSET_MIN)
+    )
+    .addWidget(
+      CardService.newTextInput()
+        .setFieldName('doneNote')
+        .setTitle('Observação (opcional)')
+        .setMultiline(true)
+        .setValue(formValue_(e, 'note') || '')
+    )
+    .addWidget(
+      CardService.newButtonSet()
+        .addButton(
+          CardService.newTextButton()
+            .setText('Concluir')
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(
+              CardService.newAction().setFunctionName('onConcludeConfirm').setParameters({ msg: params.msg, fields: JSON.stringify(fields) })
+            )
+        )
+        .addButton(CardService.newTextButton().setText('Voltar').setOnClickAction(CardService.newAction().setFunctionName('onBack')))
+    );
+  var card = CardService.newCardBuilder().setHeader(header_('Concluir tarefa')).addSection(section).build();
+  return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().pushCard(card)).build();
+}
+
+function onConcludeConfirm(e) {
+  var params = e.commonEventObject.parameters;
+  var msg = JSON.parse(params.msg);
+  var fields = JSON.parse(params.fields || '{}');
+  var startMs = formValue_(e, 'startedAt');
+  var endMs = formValue_(e, 'completedAt');
+  if (!startMs || !endMs) return notify_('Preencha a data-hora inicial e a final.');
+  if (Number(startMs) > Number(endMs)) return notify_('O início não pode ser depois do fim.');
+  try {
+    var res = api_('post', '/api/addon/status', {
+      to: 'CONCLUIDO',
+      note: formValue_(e, 'doneNote'),
+      title: fields.title,
+      responsibleId: fields.responsibleId,
+      requesterEmail: fields.requesterEmail,
+      dueAt: fields.dueAt,
+      startedAt: new Date(Number(startMs)).toISOString(),
+      completedAt: new Date(Number(endMs)).toISOString(),
+      email: msg,
+    });
+    var ctx = api_('get', '/api/addon/context?messageId=' + encodeURIComponent(msg.gmailMessageId));
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().popCard().updateCard(buildCard_(msg, res.task, ctx)))
+      .setNotification(CardService.newNotification().setText('Concluída' + (res.task && res.task.execution ? ': ' + res.task.execution : '')))
+      .build();
+  } catch (err) {
+    return notify_('Erro: ' + err.message);
+  }
 }
 
 function onStatusButton(e) {

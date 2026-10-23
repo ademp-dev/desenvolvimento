@@ -10,7 +10,7 @@ import { requireUser } from "@/lib/current-user";
 import { canEditTask, isAdmin } from "@/lib/permissions";
 import { allowedTransitions } from "@/lib/status";
 import { getTaskForUser } from "@/lib/task-service";
-import { formatDateTime, isOpen, type TaskStatusValue } from "@/lib/time";
+import { formatDateTime, formatDuration, isOpen, type TaskStatusValue } from "@/lib/time";
 
 const ACTION_LABEL: Record<string, string> = {
   CRIACAO: "Criação",
@@ -115,7 +115,13 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
               {/* Ações de status, como os botões Responder/Encaminhar */}
               {editable && (
                 <div className="mt-6">
-                  <StatusActions key={status} id={task.id} current={status} allowed={allowedTransitions(status, isAdmin(user))} />
+                  <StatusActions
+                    key={status}
+                    id={task.id}
+                    current={status}
+                    allowed={allowedTransitions(status, isAdmin(user))}
+                    startedAt={task.startedAt?.toISOString()}
+                  />
                 </div>
               )}
 
@@ -166,6 +172,12 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                 <>
                   <dt className="text-ink-3">Concluída em</dt>
                   <dd className="tabular-nums">{formatDateTime(task.completedAt)}</dd>
+                  {task.startedAt && (
+                    <>
+                      <dt className="text-ink-3">Execução</dt>
+                      <dd>{formatDuration(task.completedAt.getTime() - task.startedAt.getTime())}</dd>
+                    </>
+                  )}
                 </>
               )}
               {task.canceledAt && (

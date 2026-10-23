@@ -2,8 +2,8 @@ import { extractEmail } from "./address";
 import { prisma } from "./db";
 import { Actor, canViewTask, isAdmin } from "./permissions";
 import { allowedTransitions, STATUS_LABEL } from "./status";
-import { addNote, changeStatus, createTask, handoffTask, ServiceError, taskInclude, type EmailSourceInput } from "./task-service";
-import { elapsedMs, formatDuration, isOverdue, type TaskStatusValue } from "./time";
+import { addNote, changeStatus, createTask, handoffTask, ServiceError, taskInclude, type EmailSourceInput, type ExecutionPeriod } from "./task-service";
+import { elapsedMs, formatDateTime, formatDuration, isOverdue, type TaskStatusValue } from "./time";
 
 // Fluxo dos botões do complemento do Gmail. Todo e-mail "nasce" como Nova:
 // a tarefa só é gravada no primeiro clique (Abrir tarefa, Play, Concluir ou
@@ -33,6 +33,9 @@ export async function emailTaskSummary(actor: Actor, gmailMessageId: string, bas
     overdue: isOverdue(t, now),
     responsible: t.responsible.name,
     responsibleId: t.responsibleId,
+    // Para sugerir o início ao concluir; a execução aparece depois de concluída.
+    startedAt: t.startedAt?.toISOString() ?? null,
+    execution: status === "CONCLUIDO" && t.startedAt && t.completedAt ? `${formatDateTime(t.startedAt)} até ${formatDateTime(t.completedAt)}` : null,
     url: `${baseUrl}/tarefas/${t.id}`,
     allowed: allowedTransitions(status, isAdmin(actor)).filter((s) => EMAIL_ACTIONS.includes(s)),
   };
@@ -47,6 +50,8 @@ export interface EmailActionInput {
   responsibleId?: string | null;
   requesterEmail?: string | null;
   dueAt?: Date | null;
+  /** Início e fim da execução (só em "Concluir"). */
+  period?: ExecutionPeriod;
 }
 
 /** Aplica o botão clicado: cria a tarefa (se preciso) e muda o status. Devolve o id. */
@@ -74,7 +79,7 @@ export async function applyEmailAction(actor: Actor, input: EmailActionInput): P
     );
     task = await prisma.task.findUniqueOrThrow({ where: { id: created.id }, include: taskInclude });
   }
-  if (task.status !== input.to) await changeStatus(actor, task.id, input.to, input.note ?? undefined);
+  if (task.status !== input.to) await changeStatus(actor, task.id, input.to, input.note ?? undefined, input.period);
   return task.id;
 }
 
