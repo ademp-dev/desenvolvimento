@@ -1,26 +1,17 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { allowedDomain, appBaseUrl } from "@/lib/config";
 import { prisma } from "@/lib/db";
+import { portalKeyOk } from "@/lib/portal-auth";
 import { formatDateTime, isOverdue, OPEN_STATUSES } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Resumo das tarefas de um usuário para o painel do portal ADEMP (ademp.app.br).
- * Chamada servidor-a-servidor: o portal envia "Authorization: Bearer <PORTAL_API_KEY>"
- * e o e-mail do usuário logado nele. Só responde para contas do domínio autorizado.
+ * Resumo das tarefas de um usuário para o painel do portal ADEMP (ademp.app.br),
+ * pelo e-mail do usuário logado no portal. Só responde para contas do domínio autorizado.
  */
-function chaveValida(req: Request): boolean {
-  const esperada = process.env.PORTAL_API_KEY ?? "";
-  const header = req.headers.get("authorization") ?? "";
-  const recebida = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (esperada.length < 32 || recebida.length !== esperada.length) return false;
-  return timingSafeEqual(Buffer.from(recebida), Buffer.from(esperada));
-}
-
 export async function GET(req: Request) {
-  if (!chaveValida(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+  if (!portalKeyOk(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
 
   const email = (new URL(req.url).searchParams.get("email") ?? "").trim().toLowerCase();
   const domain = allowedDomain();
