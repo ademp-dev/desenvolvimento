@@ -5,6 +5,8 @@ import { z } from "zod";
 import { allowedDomain } from "@/lib/config";
 import { requireAdmin } from "@/lib/current-user";
 import { prisma } from "@/lib/db";
+import { ServiceError } from "@/lib/task-service";
+import { deleteUser } from "@/lib/user-service";
 
 export interface AdminFormState {
   error?: string;
@@ -21,10 +23,32 @@ export async function addUserAction(_prev: AdminFormState, fd: FormData): Promis
   const { email, name } = parsed.data;
   const domain = allowedDomain();
   if (domain && !email.endsWith(`@${domain}`)) return { error: `Somente contas @${domain}` };
-  if (await prisma.user.findUnique({ where: { email } })) return { error: "Usuário já cadastrado" };
-  await prisma.user.create({ data: { email, name } });
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing && !existing.deletedAt) return { error: "Usuário já cadastrado" };
+  if (existing) {
+    // Tinha sido excluído: volta com o histórico antigo.
+    await prisma.user.update({ where: { id: existing.id }, data: { name, active: true, deletedAt: null } });
+  } else {
+    await prisma.user.create({ data: { email, name } });
+  }
   revalidatePath("/admin/usuarios");
   return { ok: `${name} cadastrado.` };
+}
+
+/** Exclui o usuário; as tarefas abertas dele vão para quem o administrador escolher. */
+export async function deleteUserAction(_prev: AdminFormState, fd: FormData): Promise<AdminFormState> {
+  const admin = await requireAdmin();
+  const id = String(fd.get("id") ?? "");
+  const transferTo = String(fd.get("transferTo") ?? "") || null;
+  try {
+    const res = await deleteUser(admin, id, transferTo);
+    revalidatePath("/", "layout");
+    return { ok: res.transferred ? `Usuário excluído. ${res.transferred} tarefa(s) transferida(s).` : "Usuário excluído." };
+  } catch (e) {
+    if (e instanceof ServiceError) return { error: e.message };
+    console.error(e);
+    return { error: "Não foi possível excluir. Tente novamente." };
+  }
 }
 
 export async function updateUserAction(fd: FormData) {
@@ -41,4 +65,19 @@ export async function updateUserAction(fd: FormData) {
   if (!data) return;
   await prisma.user.update({ where: { id }, data });
   revalidatePath("/admin/usuarios");
+}
+
+/**
+ * Apelido: nome curto exibido como responsável em todo o sistema (web,
+ * extensão e complemento). Vazio = volta a usar o nome completo.
+ */
+export async function setNicknameAction(fd: FormData) {
+  await requireAdmin();
+  const id = String(fd.get("id"));
+  const nickname = String(fd.get("nickname") ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+  await prisma.user.update({ where: { id }, data: { nickname: nickname || null } });
+  revalidatePath("/", "layout");
 }

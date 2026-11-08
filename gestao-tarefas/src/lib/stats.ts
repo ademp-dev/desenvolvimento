@@ -1,4 +1,4 @@
-import { elapsedMs, isOverdue, overdueMs, type TaskStatusValue, type TimedTask } from "./time";
+import { elapsedMs, isOverdue, overdueMs, periodMs, workedMs, type TaskStatusValue, type TimedTask, type WorkPeriod } from "./time";
 
 // Indicadores consolidados (painel e relatório).
 
@@ -8,13 +8,18 @@ export interface Stats {
   overdue: number;
   completedLate: number;
   avgCompletionMs: number | null;
+  /** Soma do tempo efetivamente trabalhado (Play → Pause) nas tarefas. */
+  workedMs: number;
 }
 
-export function computeStats(tasks: TimedTask[], now = new Date()): Stats {
-  const byStatus: Record<TaskStatusValue, number> = { CRIADO: 0, ABERTA: 0, EM_ANDAMENTO: 0, CONCLUIDO: 0, CANCELADO: 0 };
+type WithPeriods = TimedTask & { workSessions?: WorkPeriod[] };
+
+export function computeStats(tasks: WithPeriods[], now = new Date()): Stats {
+  const byStatus: Record<TaskStatusValue, number> = { CRIADO: 0, ABERTA: 0, EM_ANDAMENTO: 0, PAUSADA: 0, CONCLUIDO: 0, CANCELADO: 0 };
   let overdue = 0;
   let completedLate = 0;
   let completedSum = 0;
+  let worked = 0;
   for (const t of tasks) {
     byStatus[t.status]++;
     if (isOverdue(t, now)) overdue++;
@@ -22,6 +27,7 @@ export function computeStats(tasks: TimedTask[], now = new Date()): Stats {
       completedSum += elapsedMs(t, now);
       if (overdueMs(t, now) > 0) completedLate++;
     }
+    worked += workedMs(t.workSessions ?? [], now);
   }
   return {
     total: tasks.length,
@@ -29,6 +35,7 @@ export function computeStats(tasks: TimedTask[], now = new Date()): Stats {
     overdue,
     completedLate,
     avgCompletionMs: byStatus.CONCLUIDO ? completedSum / byStatus.CONCLUIDO : null,
+    workedMs: worked,
   };
 }
 
@@ -38,22 +45,40 @@ export interface UserStats extends Stats {
   email: string;
 }
 
-export function statsByUser<T extends TimedTask & { responsible: { id: string; name: string; email: string } }>(
-  tasks: T[],
-  now = new Date(),
-): UserStats[] {
-  const groups = new Map<string, T[]>();
+interface Person {
+  id: string;
+  name: string;
+  email: string;
+}
+
+/**
+ * Indicadores por pessoa. Contagens e prazos são do responsável atual; o
+ * tempo trabalhado é de quem trabalhou (cada período é de quem estava com a
+ * tarefa), então quem passou a tarefa adiante continua com o seu tempo.
+ */
+export function statsByUser<
+  T extends TimedTask & { responsible: Person; workSessions?: (WorkPeriod & { user?: { name: string; email: string } })[] },
+>(tasks: T[], now = new Date()): UserStats[] {
+  const groups = new Map<string, { person: Person; tasks: T[]; worked: number }>();
+  const group = (p: Person) => {
+    let g = groups.get(p.id);
+    if (!g) groups.set(p.id, (g = { person: p, tasks: [], worked: 0 }));
+    return g;
+  };
   for (const t of tasks) {
-    const list = groups.get(t.responsible.id) ?? [];
-    list.push(t);
-    groups.set(t.responsible.id, list);
+    group(t.responsible).tasks.push(t);
+    for (const s of t.workSessions ?? []) {
+      const who = s.userId === t.responsible.id ? t.responsible : { id: s.userId, name: s.user?.name ?? s.userId, email: s.user?.email ?? "" };
+      group(who).worked += periodMs(s, now);
+    }
   }
   return [...groups.values()]
-    .map((list) => ({
-      userId: list[0].responsible.id,
-      name: list[0].responsible.name,
-      email: list[0].responsible.email,
+    .map(({ person, tasks: list, worked }) => ({
+      userId: person.id,
+      name: person.name,
+      email: person.email,
       ...computeStats(list, now),
+      workedMs: worked,
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }

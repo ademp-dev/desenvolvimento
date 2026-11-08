@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { Actor, canEditTask, canViewTask, isAdmin } from "./permissions";
 import { canTransition, INITIAL_STATUSES, statusTimestamps, STATUS_LABEL } from "./status";
-import { formatDateTime, isOpen, type TaskStatusValue } from "./time";
+import { formatDateTime, formatWorked, isOpen, isRunning, workedMs, type TaskStatusValue } from "./time";
 
 // Regras de negócio das tarefas. Toda alteração grava o histórico de
 // auditoria na mesma transação.
@@ -48,6 +48,10 @@ export const taskInclude = {
   responsible: { select: { id: true, name: true, email: true } },
   createdBy: { select: { id: true, name: true, email: true } },
   email: true,
+  workSessions: {
+    select: { id: true, userId: true, startedAt: true, endedAt: true, user: { select: { name: true, email: true } } },
+    orderBy: { startedAt: "asc" },
+  },
 } satisfies Prisma.TaskInclude;
 
 export type TaskWithRelations = Prisma.TaskGetPayload<{ include: typeof taskInclude }>;
@@ -140,6 +144,10 @@ export async function createTask(actor: Actor, rawInput: CreateTaskInput, rawEma
         ...(email ? { email: { create: email } } : {}),
       },
     });
+    // Cadastro já em andamento ou concluído: o período de trabalho começa no início informado.
+    if (startedAt && (input.status === "EM_ANDAMENTO" || (completedAt && completedAt > startedAt))) {
+      await tx.taskWorkSession.create({ data: { taskId: task.id, userId: responsible.id, startedAt, endedAt: completedAt } });
+    }
     await tx.taskHistory.create({
       data: {
         taskId: task.id,
@@ -159,15 +167,21 @@ export async function createTask(actor: Actor, rawInput: CreateTaskInput, rawEma
   });
 }
 
-export async function updateTask(actor: Actor, id: number, rawInput: TaskInput) {
+/**
+ * Edita os dados da tarefa. Encerradas (concluídas ou canceladas) só podem
+ * ser editadas por administrador; nas concluídas, o administrador também
+ * pode corrigir a data-hora inicial e a final (`execution`).
+ */
+export async function updateTask(actor: Actor, id: number, rawInput: TaskInput, execution?: ExecutionPeriod) {
   const input = taskInputSchema.parse(rawInput);
   const task = await loadEditable(actor, id);
-  if (!isOpen(task.status as TaskStatusValue)) {
-    throw new ServiceError("Tarefas encerradas não podem ser editadas. Um administrador pode reabri-las.");
+  const closed = !isOpen(task.status as TaskStatusValue);
+  if (closed && !isAdmin(actor)) {
+    throw new ServiceError("Tarefas encerradas só podem ser editadas por um administrador.");
   }
   assertNotFuture(input.createdAt, "A data de criação");
 
-  const changes: { action: string; field: string; oldValue: string; newValue: string }[] = [];
+  const changes: HistoryEntry[] = [];
   if (input.title !== task.title) changes.push({ action: "EDICAO", field: "Título", oldValue: task.title, newValue: input.title });
   if (input.description !== task.description)
     changes.push({ action: "EDICAO", field: "Descrição", oldValue: task.description, newValue: input.description });
@@ -182,10 +196,18 @@ export async function updateTask(actor: Actor, id: number, rawInput: TaskInput) 
     const responsible = await activeUser(input.responsibleId);
     changes.push({ action: "ATRIBUICAO", field: "Responsável", oldValue: userLabel(task.responsible), newValue: userLabel(responsible) });
   }
+  const exec = task.status === "CONCLUIDO" && execution ? correctedExecution(task, input.createdAt, execution) : null;
+  if (exec) changes.push(exec.history);
   if (changes.length === 0) return task;
 
   const createdAtChanged = changes.some((c) => c.field === "Data de criação");
+  const now = new Date();
+  // Trocar o responsável de tarefa aberta é passar adiante: fecha o tempo de quem saiu.
+  const passOn = !closed && input.responsibleId !== task.responsibleId ? handoffEffects(task, now) : null;
+  if (passOn) changes.push(...passOn.history);
   return prisma.$transaction(async (tx) => {
+    if (passOn) await closeOpenPeriod(tx, id, now);
+    if (exec) await applyCorrectedExecution(tx, task, id, exec);
     const updated = await tx.task.update({
       where: { id },
       data: {
@@ -195,11 +217,121 @@ export async function updateTask(actor: Actor, id: number, rawInput: TaskInput) 
         responsibleId: input.responsibleId,
         requesterEmail: input.requesterEmail,
         ...(createdAtChanged ? { createdAt: input.createdAt } : {}),
+        ...(passOn?.status ? { status: passOn.status } : {}),
+        ...(exec ? { startedAt: exec.startedAt, completedAt: exec.completedAt } : {}),
       },
     });
-    await tx.taskHistory.createMany({ data: changes.map((c) => ({ ...c, taskId: id, authorId: actor.id })) });
+    await tx.taskHistory.createMany({ data: changes.map((c) => ({ ...c, taskId: id, authorId: actor.id, createdAt: now })) });
     return updated;
   });
+}
+
+const sameMinute = (a: Date | null | undefined, b: Date | null | undefined) =>
+  !!a && !!b && Math.floor(a.getTime() / 60_000) === Math.floor(b.getTime() / 60_000);
+
+/**
+ * Correção da data-hora inicial e final de uma tarefa concluída (só
+ * administrador). O primeiro período trabalhado passa a começar no início e o
+ * último a terminar no fim; sem Play registrado, o período vira um só.
+ * Devolve null quando nada mudou.
+ */
+function correctedExecution(task: TaskWithSessions & { startedAt: Date | null; completedAt: Date | null }, createdAt: Date, e: ExecutionPeriod) {
+  const startedAt = e.startedAt ?? task.startedAt;
+  const completedAt = e.completedAt ?? task.completedAt;
+  if (!startedAt || !completedAt) throw new ServiceError("Informe a data-hora inicial e a final");
+  if (sameMinute(startedAt, task.startedAt) && sameMinute(completedAt, task.completedAt)) return null;
+  assertNotFuture(completedAt, "A data-hora final");
+  if (startedAt > completedAt) throw new ServiceError("O início não pode ser depois do fim");
+  if (completedAt < createdAt) throw new ServiceError("A conclusão não pode ser anterior à criação");
+  const sessions = task.workSessions;
+  const first = sessions[0];
+  const last = sessions[sessions.length - 1];
+  if (sessions.length > 1 && first.endedAt && startedAt > first.endedAt) {
+    throw new ServiceError(`O início não pode ser depois do primeiro Pause (${formatDateTime(first.endedAt)})`);
+  }
+  if (sessions.length > 1 && completedAt < last.startedAt) {
+    throw new ServiceError(`O fim não pode ser antes do último Play (${formatDateTime(last.startedAt)})`);
+  }
+  return {
+    startedAt,
+    completedAt,
+    history: {
+      action: "EDICAO",
+      field: "Execução",
+      oldValue: `${formatDateTime(task.startedAt)} até ${formatDateTime(task.completedAt)}`,
+      newValue: `${formatDateTime(startedAt)} até ${formatDateTime(completedAt)}`,
+    } satisfies HistoryEntry,
+  };
+}
+
+async function applyCorrectedExecution(tx: Tx, task: TaskWithSessions, taskId: number, exec: { startedAt: Date; completedAt: Date }) {
+  const sessions = task.workSessions;
+  if (sessions.length === 0) {
+    await tx.taskWorkSession.create({ data: { taskId, userId: task.responsibleId, ...periodOf(exec) } });
+    return;
+  }
+  const first = sessions[0];
+  const last = sessions[sessions.length - 1];
+  if (first.id === last.id) {
+    await tx.taskWorkSession.update({ where: { id: first.id }, data: periodOf(exec) });
+    return;
+  }
+  await tx.taskWorkSession.update({ where: { id: first.id }, data: { startedAt: exec.startedAt } });
+  await tx.taskWorkSession.update({ where: { id: last.id }, data: { endedAt: exec.completedAt } });
+}
+
+/**
+ * Exclui de vez uma tarefa encerrada (concluída ou cancelada), com
+ * observações, histórico e tempo trabalhado. Só administrador.
+ */
+export async function deleteTask(actor: Actor, id: number) {
+  if (!isAdmin(actor)) throw new ServiceError("Somente administradores podem excluir tarefas");
+  const task = await loadEditable(actor, id);
+  if (isOpen(task.status as TaskStatusValue)) throw new ServiceError("Só tarefas concluídas ou canceladas podem ser excluídas.");
+  await prisma.task.delete({ where: { id } });
+  console.log(`Tarefa #${id} ("${task.title}") excluída por ${actor.id}`);
+}
+
+// --- Períodos trabalhados -------------------------------------------------------
+
+// Cliente dentro de uma transação (o mesmo do src/lib/db.ts, com o apelido no nome).
+type Tx = Omit<typeof prisma, "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends">;
+type HistoryEntry = { action: string; field: string; oldValue: string | null; newValue: string };
+type TaskWithSessions = Pick<TaskWithRelations, "status" | "responsible" | "responsibleId" | "workSessions">;
+
+/** Fecha o período aberto (se houver) no instante informado. */
+function closeOpenPeriod(tx: Tx, taskId: number, at: Date) {
+  return tx.taskWorkSession.updateMany({ where: { taskId, endedAt: null }, data: { endedAt: at } });
+}
+
+/** Tempo trabalhado por uma pessoa na tarefa, contando o período aberto até `now`. */
+function userWorkedMs(task: TaskWithSessions, userId: string, now: Date) {
+  return workedMs(task.workSessions.filter((s) => s.userId === userId), now);
+}
+
+/**
+ * O que acontece quando a tarefa passa do responsável atual para outra
+ * pessoa: o período aberto fecha (o tempo fica com quem saiu), uma tarefa em
+ * andamento ou pausada volta para "Aberta" (o novo responsável dá o Play) e o
+ * histórico registra quanto tempo o antecessor trabalhou.
+ */
+function handoffEffects(task: TaskWithSessions, now: Date, stage = false) {
+  const from = task.status as TaskStatusValue;
+  const status: TaskStatusValue | null = stage || from === "EM_ANDAMENTO" || from === "PAUSADA" ? "ABERTA" : null;
+  const spent = userWorkedMs(task, task.responsibleId, now);
+  const history: HistoryEntry[] = [];
+  if (stage || spent > 0) {
+    history.push({
+      action: stage ? "ETAPA" : "ATRIBUICAO",
+      field: stage ? "Etapa concluída" : "Tempo trabalhado",
+      oldValue: null,
+      newValue: `${task.responsible.name} trabalhou ${formatWorked(spent)}`,
+    });
+  }
+  if (status && status !== from) {
+    history.push({ action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[status] });
+  }
+  return { status: status !== from ? status : null, history };
 }
 
 /** Início e fim da execução informados ao concluir (vazios = valores padrão). */
@@ -209,16 +341,50 @@ export interface ExecutionPeriod {
 }
 
 /**
- * Período de execução gravado na conclusão. Padrão: início = quando a tarefa
- * foi iniciada (Play) e fim = agora; o usuário pode informar outros valores.
+ * Período de execução gravado na conclusão. Padrão: início = primeiro Play
+ * e fim = agora; o usuário pode informar outros valores. Os períodos
+ * trabalhados são ajustados a esses limites: o primeiro começa no início
+ * informado e o último (aberto, ou terminado depois do fim) termina no fim.
  */
-function executionPeriod(task: { startedAt: Date | null }, now: Date, period?: ExecutionPeriod) {
+function executionPeriod(task: TaskWithSessions & { startedAt: Date | null }, now: Date, period?: ExecutionPeriod) {
   const completedAt = period?.completedAt ?? now;
-  const startedAt = period?.startedAt ?? task.startedAt ?? completedAt;
   assertNotFuture(completedAt, "O fim");
+  const sessions = task.workSessions;
+  const first = sessions[0];
+  const last = sessions[sessions.length - 1];
+  if (last && completedAt < last.startedAt) {
+    throw new ServiceError(`O fim não pode ser antes do último Play (${formatDateTime(last.startedAt)})`);
+  }
+  const startedAt = period?.startedAt ?? first?.startedAt ?? task.startedAt ?? completedAt;
   if (startedAt > completedAt) throw new ServiceError("O início não pode ser depois do fim");
+  if (first && first.endedAt && startedAt > first.endedAt) {
+    throw new ServiceError(`O início não pode ser depois do primeiro Pause (${formatDateTime(first.endedAt)})`);
+  }
   return { startedAt, completedAt };
 }
+
+/** Aplica o período de execução aos períodos trabalhados (ver executionPeriod). */
+async function settlePeriods(tx: Tx, task: TaskWithSessions & { id: number }, exec: { startedAt: Date; completedAt: Date }) {
+  const sessions = task.workSessions;
+  if (sessions.length === 0) {
+    // Concluída sem Play: o período informado vira o tempo trabalhado do responsável.
+    if (exec.completedAt > exec.startedAt) {
+      await tx.taskWorkSession.create({ data: { taskId: task.id, userId: task.responsibleId, ...periodOf(exec) } });
+    }
+    return;
+  }
+  const first = sessions[0];
+  if (first.startedAt.getTime() !== exec.startedAt.getTime()) {
+    await tx.taskWorkSession.update({ where: { id: first.id }, data: { startedAt: exec.startedAt } });
+  }
+  for (const s of sessions) {
+    if (!s.endedAt || s.endedAt > exec.completedAt) {
+      await tx.taskWorkSession.update({ where: { id: s.id }, data: { endedAt: exec.completedAt } });
+    }
+  }
+}
+
+const periodOf = (exec: { startedAt: Date; completedAt: Date }) => ({ startedAt: exec.startedAt, endedAt: exec.completedAt });
 
 export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue, note?: string, period?: ExecutionPeriod) {
   const task = await loadEditable(actor, id);
@@ -229,6 +395,7 @@ export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue
   const now = new Date();
   const text = note?.trim().slice(0, 5000);
   const execution = to === "CONCLUIDO" ? executionPeriod(task, now, period) : null;
+  const running = isRunning(task.workSessions);
 
   return prisma.$transaction(async (tx) => {
     // Só aplica se o status ainda for o lido (evita corrida entre duas abas).
@@ -237,6 +404,16 @@ export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue
       data: { status: to, ...statusTimestamps(to, now, task.startedAt), ...(execution ?? {}) },
     });
     if (res.count === 0) throw new ServiceError("A tarefa foi alterada por outra pessoa. Recarregue a página.");
+
+    // Relógio do tempo trabalhado: Play abre um período; qualquer outra mudança fecha.
+    if (to === "EM_ANDAMENTO") {
+      if (!running) await tx.taskWorkSession.create({ data: { taskId: id, userId: task.responsibleId, startedAt: now } });
+    } else if (execution) {
+      await settlePeriods(tx, task, execution);
+    } else if (running) {
+      await closeOpenPeriod(tx, id, now);
+    }
+
     await tx.taskHistory.create({
       data: { taskId: id, authorId: actor.id, action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[to], createdAt: now },
     });
@@ -258,40 +435,50 @@ export async function changeStatus(actor: Actor, id: number, to: TaskStatusValue
   });
 }
 
+export interface HandoffOptions {
+  /** "Encaminhar e atribuir": a tarefa fica "Aberta" para o novo responsável. */
+  reopen: boolean;
+  /** "Concluir etapa e atribuir": registra a etapa de quem sai e deixa a tarefa "Aberta". */
+  stage?: boolean;
+  note?: string | null;
+}
+
 /**
- * Passa a tarefa para outro usuário (botões "Atribuir" e "Encaminhar e
- * atribuir"). Com `reopen`, a tarefa volta a "Aberta" para o novo
- * responsável — é uma passagem de bastão, não uma volta no fluxo, por isso
- * não segue a regra de transições de status. Tarefas encerradas não mudam.
+ * Passa a tarefa para outro usuário (botões "Atribuir", "Concluir etapa e
+ * atribuir" e "Encaminhar e atribuir"). O tempo trabalhado até aqui fica com
+ * quem sai (o período aberto fecha agora) e o histórico registra quanto foi.
+ * Com `reopen`/`stage`, ou se estava em andamento/pausada, a tarefa volta a
+ * "Aberta" para o novo responsável — é uma passagem de bastão, não uma volta
+ * no fluxo, por isso não segue a regra de transições. Encerradas não mudam.
  */
-export async function handoffTask(actor: Actor, id: number, responsibleId: string, opts: { reopen: boolean; note?: string | null }) {
+export async function handoffTask(actor: Actor, id: number, responsibleId: string, opts: HandoffOptions) {
   const task = await loadEditable(actor, id);
   const from = task.status as TaskStatusValue;
   if (!isOpen(from)) throw new ServiceError("Tarefa encerrada: não pode ser atribuída. Um administrador pode reabri-la no app.");
   const responsible = await activeUser(responsibleId);
   const changeResponsible = responsible.id !== task.responsibleId;
-  const toStatus: TaskStatusValue = opts.reopen ? "ABERTA" : from;
-  const changeStatusNow = toStatus !== from;
+  if (opts.stage && !changeResponsible) throw new ServiceError("Escolha outra pessoa para continuar a tarefa.");
   const text = opts.note?.trim().slice(0, 5000);
-  if (!changeResponsible && !changeStatusNow && !text) return task;
-
   const now = new Date();
+
+  const effects = changeResponsible ? handoffEffects(task, now, opts.stage) : { status: null, history: [] };
+  const toStatus: TaskStatusValue = opts.reopen && from !== "ABERTA" ? "ABERTA" : (effects.status ?? from);
+  const changeStatusNow = toStatus !== from;
+  if (!changeResponsible && !changeStatusNow && !text) return task;
+  const history = effects.history.filter((h) => h.action !== "STATUS");
+  if (changeStatusNow) history.push({ action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[toStatus] });
+
   return prisma.$transaction(async (tx) => {
     const res = await tx.task.updateMany({
       where: { id, status: from },
       data: { responsibleId: responsible.id, status: toStatus, ...(changeStatusNow ? statusTimestamps(toStatus, now, task.startedAt) : {}) },
     });
     if (res.count === 0) throw new ServiceError("A tarefa foi alterada por outra pessoa. Recarregue.");
+    if (changeResponsible || changeStatusNow) await closeOpenPeriod(tx, id, now);
     if (changeResponsible) {
-      await tx.taskHistory.create({
-        data: { taskId: id, authorId: actor.id, action: "ATRIBUICAO", field: "Responsável", oldValue: userLabel(task.responsible), newValue: userLabel(responsible), createdAt: now },
-      });
+      history.unshift({ action: "ATRIBUICAO", field: "Responsável", oldValue: userLabel(task.responsible), newValue: userLabel(responsible) });
     }
-    if (changeStatusNow) {
-      await tx.taskHistory.create({
-        data: { taskId: id, authorId: actor.id, action: "STATUS", field: "Status", oldValue: STATUS_LABEL[from], newValue: STATUS_LABEL[toStatus], createdAt: now },
-      });
-    }
+    await tx.taskHistory.createMany({ data: history.map((h) => ({ ...h, taskId: id, authorId: actor.id, createdAt: now })) });
     if (text) await tx.taskNote.create({ data: { taskId: id, authorId: actor.id, text, createdAt: now } });
   });
 }

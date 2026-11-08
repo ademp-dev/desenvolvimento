@@ -39,6 +39,8 @@ export const assignBodySchema = z.object({
   email: emailBodySchema.optional().nullable(),
   messageId: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/).optional().nullable(),
   threadId: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/).optional().nullable(),
+  /** "Concluir etapa e atribuir": registra a etapa de quem sai. */
+  stage: z.boolean().optional(),
 });
 
 /** Converte os metadados enviados pelo Gmail no formato gravado (caixa e link montados aqui). */
@@ -67,6 +69,7 @@ export async function runAssign(user: Actor & { email: string }, raw: unknown, b
     messageId: body.messageId,
     threadId: body.threadId,
     reopen,
+    stage: body.stage,
   });
   const messageId = body.email?.gmailMessageId ?? body.messageId;
   return { taskId, task: messageId ? await emailTaskSummary(user, messageId, baseUrl) : null };

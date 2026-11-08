@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { TaskForm } from "@/components/TaskForm";
 import { requireUser } from "@/lib/current-user";
-import { canEditTask } from "@/lib/permissions";
+import { canEditTask, isAdmin } from "@/lib/permissions";
 import { assignableUsers, getTaskForUser } from "@/lib/task-service";
 import { isOpen, toLocalInputValue, type TaskStatusValue } from "@/lib/time";
 
@@ -10,11 +10,18 @@ export default async function EditTaskPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const task = await getTaskForUser(user, Number(id));
   if (!task || !canEditTask(user, task)) notFound();
-  if (!isOpen(task.status as TaskStatusValue)) redirect(`/tarefas/${task.id}`);
+  // Encerradas (concluídas ou canceladas) só o administrador edita.
+  if (!isOpen(task.status as TaskStatusValue) && !isAdmin(user)) redirect(`/tarefas/${task.id}`);
 
   const users = await assignableUsers();
   // Garante que o responsável atual apareça mesmo se tiver sido desativado.
   if (!users.some((u) => u.id === task.responsible.id)) users.push(task.responsible);
+
+  const firstPlay = task.workSessions[0]?.startedAt ?? task.startedAt;
+  const execution =
+    task.status === "CONCLUIDO" && task.completedAt
+      ? { start: toLocalInputValue(firstPlay ?? task.completedAt), end: toLocalInputValue(task.completedAt) }
+      : undefined;
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -31,6 +38,7 @@ export default async function EditTaskPage({ params }: { params: Promise<{ id: s
           requesterEmail: task.requesterEmail ?? "",
           createdAt: toLocalInputValue(task.createdAt),
           dueAt: toLocalInputValue(task.dueAt),
+          execution,
         }}
       />
     </div>

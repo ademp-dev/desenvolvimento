@@ -52,6 +52,7 @@
 #tarefas-ademp-bar .ta-CRIADO { background: #c2e7ff; color: #001d35; }
 #tarefas-ademp-bar .ta-ABERTA { background: #ffe2a8; color: #5c3c00; }
 #tarefas-ademp-bar .ta-EM_ANDAMENTO { background: #d3e3fd; color: #0842a0; }
+#tarefas-ademp-bar .ta-PAUSADA { background: #fde7c8; color: #8a4b00; }
 #tarefas-ademp-bar .ta-CONCLUIDO { background: #c4eed0; color: #0d652d; }
 #tarefas-ademp-bar .ta-CANCELADO { background: #e3e3e3; color: #5f6368; text-decoration: line-through; }
 
@@ -97,6 +98,8 @@
 #tarefas-ademp-bar .act-done:hover { color: #188038; background: rgba(24, 128, 56, 0.08); }
 #tarefas-ademp-bar .act-cancel:hover { color: #b3261e; background: rgba(179, 38, 30, 0.08); }
 #tarefas-ademp-bar .act-assign:hover { color: #025148; background: rgba(2, 81, 72, 0.1); }
+#tarefas-ademp-bar .act-pause:hover { color: #b06000; background: rgba(176, 96, 0, 0.1); }
+#tarefas-ademp-bar .act-stage:hover { color: #188038; background: rgba(24, 128, 56, 0.08); }
 
 /* Menu "Atribuir a" — no estilo dos menus do Gmail */
 #tarefas-ademp-menu {
@@ -254,3 +257,48 @@
 #tarefas-ademp-done .ta-btn-text:hover { background: rgba(11, 87, 208, 0.08); }
 #tarefas-ademp-done .ta-btn-done { background: #188038; color: #fff; }
 #tarefas-ademp-done .ta-btn-done:hover { background: #137333; }
+
+/* Relógio do tempo trabalhado (Play → Pause) */
+#tarefas-ademp-bar .ta-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 6px;
+  background: #fbe9a6;
+  color: #5c4a00;
+  font-variant-numeric: tabular-nums;
+}
+#tarefas-ademp-bar .ta-clock svg { width: 16px; height: 16px; }
+#tarefas-ademp-bar .ta-clock.running { background: #c4eed0; color: #0d652d; }
+
+/* Responsável pela tarefa — sempre visível (mesmo destaque do app e do complemento) */
+#tarefas-ademp-bar .ta-resp {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+  padding: 2px 8px 2px 2px;
+  border-radius: 12px;
+  background: #e6f1ef;
+  color: #025148;
+  font-weight: 500;
+  max-width: 260px;
+}
+#tarefas-ademp-bar .ta-resp.empty { padding-left: 8px; background: transparent; color: #5f6368; font-weight: 400; }
+#tarefas-ademp-bar .ta-resp-label { font-weight: 400; color: #3f6b65; }
+#tarefas-ademp-bar .ta-resp.empty .ta-resp-label { color: #5f6368; }
+#tarefas-ademp-bar .ta-resp-name { overflow: hidden; text-overflow: ellipsis; }
+#tarefas-ademp-bar .ta-avatar-sm {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #025148;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}

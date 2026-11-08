@@ -17,6 +17,8 @@ interface Props {
     requesterEmail: string;
     createdAt: string; // "YYYY-MM-DDTHH:mm" no fuso do app
     dueAt: string;
+    /** Tarefa concluída sendo editada (administrador): período de execução. */
+    execution?: { start: string; end: string };
   };
   /** Momento atual no fuso do app ("YYYY-MM-DDTHH:mm"), limite máximo das datas. */
   nowLocal: string;
@@ -124,6 +126,32 @@ export function TaskForm({ users, initial, nowLocal, gmailMessageId, cancelHref,
           <p className="mt-1 text-xs text-ink-3">Opcional. Horário de Brasília.</p>
         </div>
       </div>
+
+      {initial.execution && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="executionStart">
+              Data-hora inicial *
+            </label>
+            <input
+              id="executionStart"
+              name="executionStart"
+              type="datetime-local"
+              required
+              max={nowLocal}
+              defaultValue={initial.execution.start}
+              className="input"
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="executionEnd">
+              Data-hora final (conclusão) *
+            </label>
+            <input id="executionEnd" name="executionEnd" type="datetime-local" required max={nowLocal} defaultValue={initial.execution.end} className="input" />
+            <p className="mt-1 text-xs text-ink-3">Corrige o período de execução e o tempo trabalhado.</p>
+          </div>
+        </div>
+      )}
 
       {isNew && (
         <div className="grid gap-4 sm:grid-cols-2">

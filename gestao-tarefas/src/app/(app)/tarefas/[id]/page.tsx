@@ -4,19 +4,22 @@ import { Avatar } from "@/components/Brand";
 import { DueInfo, Elapsed } from "@/components/Elapsed";
 import { EmailCard } from "@/components/EmailCard";
 import { Icon } from "@/components/Icon";
-import { OriginBadge, StatusBadge } from "@/components/StatusBadge";
-import { NoteForm, StatusActions } from "@/components/TaskActions";
+import { OriginBadge, ResponsibleTag, StatusBadge } from "@/components/StatusBadge";
+import { DeleteTaskButton, HandoffForm, NoteForm, StatusActions } from "@/components/TaskActions";
+import { WorkedTime } from "@/components/WorkedTime";
+import { workedPerPerson } from "@/lib/export";
 import { requireUser } from "@/lib/current-user";
 import { canEditTask, isAdmin } from "@/lib/permissions";
 import { allowedTransitions } from "@/lib/status";
-import { getTaskForUser } from "@/lib/task-service";
-import { formatDateTime, formatDuration, isOpen, type TaskStatusValue } from "@/lib/time";
+import { assignableUsers, getTaskForUser } from "@/lib/task-service";
+import { formatDateTime, formatWorked, isOpen, workedMs, type TaskStatusValue } from "@/lib/time";
 
 const ACTION_LABEL: Record<string, string> = {
   CRIACAO: "Criação",
   STATUS: "Status",
   EDICAO: "Edição",
   ATRIBUICAO: "Atribuição",
+  ETAPA: "Etapa",
   OBSERVACAO: "Observação",
 };
 
@@ -25,6 +28,7 @@ const ACTION_ICON: Record<string, string> = {
   STATUS: "swap_horiz",
   EDICAO: "edit",
   ATRIBUICAO: "person",
+  ETAPA: "flag",
   OBSERVACAO: "chat",
 };
 
@@ -46,6 +50,11 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
     dueAt: task.dueAt?.toISOString(),
   };
   const requesterEmail = task.requester?.email ?? "";
+  const users = editable && !closed ? await assignableUsers() : [];
+  const now = new Date();
+  const sessions = task.workSessions;
+  const openSession = sessions.find((s) => !s.endedAt);
+  const perPerson = workedPerPerson(task, now);
 
   return (
     <div className="space-y-2">
@@ -54,11 +63,13 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
         <Link href="/tarefas" className="icon-btn" title="Voltar" aria-label="Voltar">
           <Icon name="arrow_back" />
         </Link>
-        {editable && !closed && (
+        {/* Encerradas (concluídas ou canceladas): editar e excluir só o administrador. */}
+        {editable && (!closed || isAdmin(user)) && (
           <Link href={`/tarefas/${task.id}/editar`} className="icon-btn" title="Editar" aria-label="Editar">
             <Icon name="edit" />
           </Link>
         )}
+        {closed && isAdmin(user) && <DeleteTaskButton id={task.id} title={task.title} />}
         {task.email && (
           <a href={task.email.link} target="_blank" rel="noopener noreferrer" className="icon-btn" title="Abrir e-mail original" aria-label="Abrir e-mail original">
             <Icon name="open_in_new" />
@@ -73,6 +84,7 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
           <div className="flex flex-wrap items-center gap-3 py-3 pl-2 md:pl-14">
             <h1 className="text-[22px] break-words text-ink">{task.title}</h1>
             <StatusBadge status={status} />
+            <ResponsibleTag responsible={task.responsible} />
             <OriginBadge origin={task.origin} />
           </div>
 
@@ -120,8 +132,13 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                     id={task.id}
                     current={status}
                     allowed={allowedTransitions(status, isAdmin(user))}
-                    startedAt={task.startedAt?.toISOString()}
+                    startedAt={(sessions[0]?.startedAt ?? task.startedAt)?.toISOString()}
                   />
+                  {!closed && (
+                    <div className="mt-3">
+                      <HandoffForm id={task.id} users={users} responsibleId={task.responsibleId} responsibleName={task.responsible.name} />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -155,12 +172,16 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
               <dd className="font-medium">
                 <Elapsed {...timer} />
               </dd>
+              <dt className="text-ink-3">Trabalhado</dt>
+              <dd className="font-medium">
+                <WorkedTime closedMs={workedMs(sessions.filter((s) => s.endedAt), now)} runningSince={openSession?.startedAt.toISOString()} />
+              </dd>
               <dt className="text-ink-3">Solicitante</dt>
               <dd className="break-all">{requesterEmail || "—"}</dd>
               <dt className="text-ink-3">Responsável</dt>
               <dd>
-                {task.responsible.name}
-                <div className="text-xs break-all text-ink-3">{task.responsible.email}</div>
+                <ResponsibleTag responsible={task.responsible} showLabel={false} />
+                <div className="mt-0.5 text-xs break-all text-ink-3">{task.responsible.email}</div>
               </dd>
               <dt className="text-ink-3">Criada em</dt>
               <dd className="tabular-nums">{formatDateTime(task.createdAt)}</dd>
@@ -172,12 +193,6 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                 <>
                   <dt className="text-ink-3">Concluída em</dt>
                   <dd className="tabular-nums">{formatDateTime(task.completedAt)}</dd>
-                  {task.startedAt && (
-                    <>
-                      <dt className="text-ink-3">Execução</dt>
-                      <dd>{formatDuration(task.completedAt.getTime() - task.startedAt.getTime())}</dd>
-                    </>
-                  )}
                 </>
               )}
               {task.canceledAt && (
@@ -190,6 +205,30 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
               <dd className="tabular-nums">{formatDateTime(task.updatedAt)}</dd>
             </dl>
           </div>
+
+          {sessions.length > 0 && (
+            <div className="rounded-2xl border border-line p-4">
+              <h2 className="mb-3 text-sm font-medium text-ink">Tempo trabalhado por pessoa</h2>
+              <ul className="space-y-1.5 text-sm">
+                {perPerson.map((p) => (
+                  <li key={p.userId} className="flex justify-between gap-3">
+                    <span className="truncate">{p.name}</span>
+                    <span className="font-medium tabular-nums">{formatWorked(p.ms)}</span>
+                  </li>
+                ))}
+              </ul>
+              <details className="mt-3 text-xs text-ink-3">
+                <summary className="cursor-pointer">Períodos ({sessions.length})</summary>
+                <ol className="mt-2 space-y-1">
+                  {sessions.map((s) => (
+                    <li key={s.id} className="tabular-nums">
+                      {formatDateTime(s.startedAt)} → {s.endedAt ? formatDateTime(s.endedAt) : "em andamento"} · {s.user.name}
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            </div>
+          )}
 
           <div className="rounded-2xl border border-line p-4">
             <h2 className="mb-3 text-sm font-medium text-ink">Histórico de alterações</h2>

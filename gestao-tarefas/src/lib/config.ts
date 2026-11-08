@@ -1,6 +1,8 @@
 // Configuração lida das variáveis de ambiente.
 
 export const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+/** Envio de e-mail pela caixa do próprio usuário (relatório em PDF por e-mail). */
+export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 
 export function allowedDomain(): string {
   return (process.env.ALLOWED_DOMAIN || "").trim().toLowerCase();

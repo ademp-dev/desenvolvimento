@@ -20,7 +20,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     CRIADO: by.CRIADO ?? 0,
     ABERTA: by.ABERTA ?? 0,
     EM_ANDAMENTO: by.EM_ANDAMENTO ?? 0,
-    open: (by.CRIADO ?? 0) + (by.ABERTA ?? 0) + (by.EM_ANDAMENTO ?? 0),
+    PAUSADA: by.PAUSADA ?? 0,
+    open: (by.CRIADO ?? 0) + (by.ABERTA ?? 0) + (by.EM_ANDAMENTO ?? 0) + (by.PAUSADA ?? 0),
     overdue,
   };
 

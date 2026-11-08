@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { Actor, visibilityWhere } from "./permissions";
 import { elapsedMs, OPEN_STATUSES, overdueMs, parseLocalDateTime, type TaskStatusValue, type TimedTask } from "./time";
-import { STATUS_ORDER } from "./status";
+import { STATUS_LABEL, STATUS_ORDER } from "./status";
 
 // Filtros e ordenação compartilhados por painel, lista, relatório e exportação.
 // Os filtros vêm da URL (?status=...&responsavel=...), então são compartilháveis.
@@ -120,4 +120,21 @@ export function sortTasks<T extends TimedTask & { id: number }>(tasks: T[], sort
     }
   };
   return [...tasks].sort((a, b) => (key(a) - key(b)) * mult || b.id - a.id);
+}
+
+/** Filtros em texto, para o cabeçalho do PDF e do e-mail. */
+export function describeFilters(f: TaskFilters, responsibleName?: string | null): string {
+  const date = (v?: string) => (v ? v.split("-").reverse().join("/") : "");
+  const range = (label: string, from?: string, to?: string) =>
+    from || to ? `${label} ${from ? `de ${date(from)}` : ""}${from && to ? " " : ""}${to ? `até ${date(to)}` : ""}` : null;
+  const parts = [
+    f.status.length ? `status: ${f.status.map((s) => STATUS_LABEL[s]).join(", ")}` : null,
+    f.responsibleId ? `responsável: ${responsibleName ?? f.responsibleId}` : null,
+    f.origin ? `origem: ${f.origin === "EMAIL" ? "e-mail" : "manual"}` : null,
+    range("criadas", f.createdFrom, f.createdTo),
+    range("prazo", f.dueFrom, f.dueTo),
+    f.overdue ? "somente vencidas" : null,
+    f.q ? `busca: "${f.q}"` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "nenhum (todas as tarefas)";
 }

@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { adminEmails, allowedDomain, GMAIL_READONLY_SCOPE, isAllowedAccount } from "@/lib/config";
+import { adminEmails, allowedDomain, GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE, isAllowedAccount } from "@/lib/config";
 
 declare module "next-auth" {
   interface Session {
@@ -22,9 +22,10 @@ interface GoogleProfile {
 /**
  * Autenticação com Google (OpenID Connect).
  * - Login pede apenas "openid email profile".
- * - O acesso de leitura ao Gmail é pedido depois, só por quem usa o recurso
- *   "Criar tarefa a partir de e-mail" (autorização incremental — ver
- *   src/app/(app)/tarefas/email/actions.ts).
+ * - O acesso ao Gmail é pedido depois, só por quem usa o recurso:
+ *   leitura em "Criar tarefa a partir de e-mail" (src/app/(app)/tarefas/email/actions.ts)
+ *   e envio em "Enviar relatório por e-mail" (src/app/(app)/relatorios/actions.ts).
+ *   É a autorização incremental do Google.
  * - Só contas verificadas do domínio Workspace configurado são aceitas.
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -71,13 +72,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         });
         token.uid = user.id;
 
-        // Guarda os tokens apenas quando o usuário concedeu leitura do Gmail.
-        if (account.scope?.split(" ").includes(GMAIL_READONLY_SCOPE) && account.access_token) {
+        // Guarda os tokens apenas quando o usuário concedeu acesso ao Gmail (leitura ou envio).
+        const scopes = account.scope?.split(" ") ?? [];
+        if ((scopes.includes(GMAIL_READONLY_SCOPE) || scopes.includes(GMAIL_SEND_SCOPE)) && account.access_token) {
           const expiresAt = account.expires_at ? new Date(account.expires_at * 1000) : null;
           const data = {
             accessToken: encrypt(account.access_token),
             expiresAt,
-            scope: account.scope,
+            scope: scopes.join(" "),
             ...(account.refresh_token ? { refreshToken: encrypt(account.refresh_token) } : {}),
           };
           await prisma.googleToken.upsert({

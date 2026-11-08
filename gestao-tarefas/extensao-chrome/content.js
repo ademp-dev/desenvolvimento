@@ -3,7 +3,8 @@
  *
  * Ao abrir um e-mail, insere no topo da mensagem uma barra discreta, no
  * estilo dos ícones do Gmail, com o status da tarefa e as ações:
- * Abrir tarefa / Play / Concluir / Cancelar / Ver no app.
+ * Abrir tarefa / Play / Pause / Concluir / Cancelar / Atribuir /
+ * Concluir etapa e atribuir / Ver no app, e o tempo trabalhado em tempo real.
  * Todo e-mail começa como "Nova"; a tarefa só é gravada no primeiro clique.
  *
  * A leitura do Gmail usa classes e atributos da página (h2.hP, div.adn, div.gs,
@@ -15,7 +16,7 @@
 
   var BAR_ID = 'tarefas-ademp-bar';
   var SVG_NS = 'http://www.w3.org/2000/svg';
-  var STATUS_LABEL = { CRIADO: 'Nova', ABERTA: 'Aberta', EM_ANDAMENTO: 'Em andamento', CONCLUIDO: 'Concluída', CANCELADO: 'Cancelada' };
+  var STATUS_LABEL = { CRIADO: 'Nova', ABERTA: 'Aberta', EM_ANDAMENTO: 'Em andamento', PAUSADA: 'Pausada', CONCLUIDO: 'Concluída', CANCELADO: 'Cancelada' };
 
   // Ícones Material (24×24), os mesmos usados pelo Gmail.
   var ICON = {
@@ -27,6 +28,10 @@
     refresh: 'M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
     login: 'M11 7 9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z',
     assign: 'M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
+    pause: 'M9 16h2V8H9v8zm3-14C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm1-4h2V8h-2v8z',
+    // "Concluir etapa e atribuir": pessoa com seta (passar adiante).
+    stage: 'M9 12c1.93 0 3.5-1.57 3.5-3.5S10.93 5 9 5 5.5 6.57 5.5 8.5 7.07 12 9 12zm0 2c-2.34 0-7 1.17-7 3.5V19h11v-1.5c0-2.33-4.66-3.5-7-3.5zm9-6-1.41 1.41L18.17 11H13v2h5.17l-1.58 1.59L18 16l4-4-4-4z',
+    timer: 'M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61 1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z',
   };
 
   var usersCache = null; // lista de usuários cadastrados (carregada uma vez)
@@ -34,6 +39,7 @@
   var ACTIONS = [
     { to: 'ABERTA', icon: 'addTask', tip: 'Abrir tarefa', cls: 'act-open' },
     { to: 'EM_ANDAMENTO', icon: 'play', tip: 'Play — iniciar', cls: 'act-play' },
+    { to: 'PAUSADA', icon: 'pause', tip: 'Pause — pausar a contagem', cls: 'act-pause' },
     { to: 'CONCLUIDO', icon: 'done', tip: 'Concluir', cls: 'act-done' },
     { to: 'CANCELADO', icon: 'cancel', tip: 'Cancelar', cls: 'act-cancel' },
   ];
@@ -164,6 +170,7 @@
       // contexto da extensão invalidado
     }
     observer.disconnect();
+    clearInterval(clockTimer);
     window.removeEventListener('hashchange', schedule);
     clearTimeout(pending);
     current = null;
@@ -197,9 +204,12 @@
 
     var task = res.data.task;
     var status = task ? task.status : 'CRIADO';
-    bar.appendChild(el('span', { class: 'ta-chip ta-' + status, text: STATUS_LABEL[status] }));
+    bar.appendChild(el('span', { class: 'ta-chip ta-' + status, text: (task && task.statusLabel) || STATUS_LABEL[status] || status }));
+    bar.appendChild(responsibleChip(task));
     if (task) {
-      bar.appendChild(el('span', { class: 'ta-muted', text: task.elapsed + ' · ' + task.responsible, title: 'Tempo decorrido · responsável' }));
+      bar.appendChild(el('span', { class: 'ta-muted', text: task.elapsed, title: 'Tempo decorrido desde a chegada do e-mail' }));
+      var clock = workedClock(task);
+      if (clock) bar.appendChild(clock);
       if (task.overdue) bar.appendChild(el('span', { class: 'ta-late', text: 'Vencida' }));
     }
 
@@ -209,7 +219,8 @@
       var next = allowed[0]; // próxima ação do fluxo: destaque sutil
       ACTIONS.forEach(function (a) {
         if (allowed.indexOf(a.to) < 0) return;
-        var btn = iconButton(a.icon, a.tip, a.cls + (a.to === next && a.to !== 'CANCELADO' ? ' act-next' : ''), function (ev) {
+        var tip = a.to === 'EM_ANDAMENTO' && status === 'PAUSADA' ? 'Play — retomar' : a.tip;
+        var btn = iconButton(a.icon, tip, a.cls + (a.to === next && a.to !== 'CANCELADO' ? ' act-next' : ''), function (ev) {
           if (a.to === 'CONCLUIDO') {
             ev.stopPropagation();
             toggleDoneDialog(btn, task ? task.startedAt : null);
@@ -225,13 +236,37 @@
     if (allowed.length) {
       var assignBtn = iconButton('assign', 'Atribuir a um usuário', 'act-assign', function (ev) {
         ev.stopPropagation();
-        toggleAssignMenu(assignBtn, task ? task.responsibleId : null);
+        toggleAssignMenu(assignBtn, task ? task.responsibleId : null, false);
       });
       bar.appendChild(assignBtn);
+      var stageBtn = iconButton('stage', 'Concluir minha etapa e atribuir', 'act-stage', function (ev) {
+        ev.stopPropagation();
+        toggleAssignMenu(stageBtn, task ? task.responsibleId : null, true);
+      });
+      bar.appendChild(stageBtn);
     }
     bar.appendChild(iconButton('open', task ? 'Ver tarefa no app' : 'Abrir app de tarefas', '', function () {
       send({ type: 'open', url: task ? task.url : res.data.appUrl });
     }));
+  }
+
+  /**
+   * Quem é o responsável pelo e-mail (tarefa): inicial + nome, sempre visível.
+   * Mesmo destaque do app e do complemento.
+   */
+  function responsibleChip(task) {
+    if (!task) {
+      return el('span', { class: 'ta-resp empty', title: 'Este e-mail ainda não virou tarefa' }, [
+        el('span', { class: 'ta-resp-label', text: 'Responsável:' }),
+        el('span', { text: 'ninguém ainda' }),
+      ]);
+    }
+    var name = task.responsible || '';
+    return el('span', { class: 'ta-resp', title: 'Responsável: ' + name + (task.responsibleEmail ? ' <' + task.responsibleEmail + '>' : '') }, [
+      el('span', { class: 'ta-avatar-sm', text: name.trim().charAt(0).toUpperCase() || '?' }),
+      el('span', { class: 'ta-resp-label', text: 'Responsável:' }),
+      el('span', { class: 'ta-resp-name', text: name }),
+    ]);
   }
 
   // --- Atribuir --------------------------------------------------------------
@@ -243,14 +278,20 @@
     if (b) b.setAttribute('aria-expanded', 'false');
   }
 
-  /** Abre a lista de usuários cadastrados logo abaixo do botão "Atribuir". */
-  function toggleAssignMenu(anchorBtn, currentId) {
+  /**
+   * Abre a lista de usuários cadastrados logo abaixo do botão. Com "stage"
+   * ("Concluir minha etapa e atribuir"), registra a etapa de quem sai.
+   * Nos dois casos o tempo trabalhado até aqui fica com quem sai.
+   */
+  function toggleAssignMenu(anchorBtn, currentId, stage) {
     if (document.getElementById('tarefas-ademp-menu')) {
       closeAssignMenu();
       return;
     }
-    var menu = el('div', { id: 'tarefas-ademp-menu', role: 'menu', 'aria-label': 'Atribuir a' });
-    menu.appendChild(el('div', { class: 'ta-menu-title', text: 'Atribuir a' }));
+    closeDoneDialog();
+    var title = stage ? 'Concluir minha etapa e passar para' : 'Atribuir a';
+    var menu = el('div', { id: 'tarefas-ademp-menu', role: 'menu', 'aria-label': title });
+    menu.appendChild(el('div', { class: 'ta-menu-title', text: title }));
     var list = el('div', { class: 'ta-menu-list' }, [el('div', { class: 'ta-menu-empty', text: 'Carregando…' })]);
     menu.appendChild(list);
     var r = anchorBtn.getBoundingClientRect();
@@ -276,7 +317,7 @@
               class: 'ta-menu-item' + (isCurrent ? ' current' : ''),
               onclick: function () {
                 closeAssignMenu();
-                if (!isCurrent) assign(u);
+                if (!isCurrent) assign(u, stage);
               },
             },
             [
@@ -301,16 +342,57 @@
     });
   }
 
-  function assign(user) {
+  function assign(user, stage) {
     if (!current) return;
     var info = current.info;
     var key = current.key;
     render({ loading: true });
-    send({ type: 'assign', body: { responsibleId: user.id, mailbox: info.mailbox, email: info.email } }).then(function (res) {
+    var body = { responsibleId: user.id, mailbox: info.mailbox, email: info.email, stage: !!stage };
+    send({ type: 'assign', body: body }).then(function (res) {
       if (!current || current.key !== key) return;
-      toast(res.ok ? 'Tarefa atribuída a ' + user.name : (res.data && res.data.error) || 'Erro ao atribuir');
+      var ok = stage ? 'Etapa concluída. Tarefa passada para ' + user.name : 'Tarefa atribuída a ' + user.name;
+      toast(res.ok ? ok : (res.data && res.data.error) || 'Erro ao atribuir');
       refresh();
     });
+  }
+
+  // --- Tempo trabalhado em tempo real -------------------------------------------
+
+  var clockTimer = null;
+
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  /** "1h 05min" (parado) ou "01:05:12" (correndo). */
+  function formatWorked(ms, running) {
+    var s = Math.floor(Math.max(0, ms) / 1000);
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    if (running) return pad2(h) + ':' + pad2(m) + ':' + pad2(s % 60);
+    return h ? h + 'h ' + pad2(m) + 'min' : m + 'min';
+  }
+
+  /**
+   * Relógio do tempo efetivamente trabalhado (Play → Pause). Com a tarefa em
+   * andamento, avança a cada segundo; pausada, mostra o total parado.
+   */
+  function workedClock(task) {
+    clearInterval(clockTimer);
+    var closed = task.workedClosedMs || 0;
+    var since = task.runningSince ? Date.parse(task.runningSince) : null;
+    if (!since && !closed) return null;
+    var label = el('span', { class: 'ta-clock-text' });
+    var node = el('span', { class: 'ta-clock' + (since ? ' running' : ''), title: since ? 'Tempo trabalhado (contando)' : 'Tempo trabalhado (pausado)' }, [
+      svg('timer'),
+      label,
+    ]);
+    var tick = function () {
+      label.textContent = formatWorked(closed + (since ? Date.now() - since : 0), !!since);
+    };
+    tick();
+    if (since) clockTimer = setInterval(tick, 1000);
+    return node;
   }
 
   // --- Concluir: data-hora inicial e final -------------------------------------
@@ -454,6 +536,7 @@
     var info = readOpenMessage();
     if (!info) {
       current = null;
+      clearInterval(clockTimer);
       var old = document.getElementById(BAR_ID);
       if (old) old.remove();
       return;
@@ -488,4 +571,26 @@
   observer.observe(document.body, { childList: true, subtree: true });
   window.addEventListener('hashchange', schedule);
   schedule();
+
+  // Mantém responsável e status atualizados se outra pessoa mexer na tarefa
+  // com o e-mail aberto: confere a cada minuto, sem piscar a barra e sem
+  // atrapalhar menus abertos.
+  var watchTimer = setInterval(function () {
+    if (!alive()) {
+      clearInterval(watchTimer);
+      return;
+    }
+    if (!current || document.visibilityState !== 'visible') return;
+    if (document.getElementById('tarefas-ademp-menu') || document.getElementById(DONE_ID)) return;
+    var key = current.key;
+    var info = current.info;
+    send({ type: 'context', messageId: info.email.gmailMessageId, mailbox: info.mailbox }).then(function (res) {
+      if (!current || current.key !== key || !res.ok) return;
+      if (document.getElementById('tarefas-ademp-menu') || document.getElementById(DONE_ID)) return;
+      var before = JSON.stringify(current.state && current.state.res && current.state.res.data && current.state.res.data.task);
+      var after = JSON.stringify(res.data && res.data.task);
+      current.state = { res: res };
+      if (before !== after) render(current.state);
+    });
+  }, 60000);
 })();

@@ -2,8 +2,11 @@
 // Rodam somente com RUN_DB_TESTS=1 e um DATABASE_URL de um banco DESCARTÁVEL
 // já migrado (npx prisma migrate deploy). Os dados são apagados no início.
 import { beforeAll, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/db";
-import { addNote, changeStatus, createTask, getTaskForUser, updateTask, ServiceError } from "@/lib/task-service";
+import { fullNames, prisma } from "@/lib/db";
+import { addNote, assignableUsers, changeStatus, createTask, deleteTask, getTaskForUser, handoffTask, updateTask, ServiceError } from "@/lib/task-service";
+import { deleteUser } from "@/lib/user-service";
+import { buildReportPdf } from "@/lib/report";
+import { workedMs } from "@/lib/time";
 import { findTasks } from "@/lib/queries";
 import { parseFilters } from "@/lib/filters";
 import { reportRows, toXlsx } from "@/lib/export";
@@ -224,18 +227,21 @@ describe.runIf(run)("integração com o banco", () => {
     expect(t?.responsibleId).toBe(bia.id);
     expect(t?.createdById).toBe(ana.id); // quem atribuiu continua vendo
 
-    // Bia inicia; Ana reatribui pela extensão (sem reabrir): status continua Em andamento.
+    // Bia inicia; Ana reatribui pela extensão: o tempo da Bia fecha e a tarefa
+    // volta a Aberta, esperando o Play do novo responsável.
     await changeStatus(bia, id, "EM_ANDAMENTO");
     await assignEmailTask(ana, { responsibleId: chefe.id, messageId: e1.gmailMessageId, reopen: false });
     t = await getTaskForUser(ana, id);
-    expect([t?.status, t?.responsibleId]).toEqual(["EM_ANDAMENTO", chefe.id]);
+    expect([t?.status, t?.responsibleId]).toEqual(["ABERTA", chefe.id]);
+    expect(t?.workSessions.map((s) => [s.userId, !!s.endedAt])).toEqual([[bia.id, true]]);
 
     // "Encaminhar e atribuir" achando a tarefa só pela conversa (thread): volta a Aberta para o novo responsável.
     await assignEmailTask(ana, { responsibleId: bia.id, threadId: base.threadId, reopen: true, note: "Por favor, verifique" });
     t = await getTaskForUser(ana, id);
     expect([t?.status, t?.responsibleId]).toEqual(["ABERTA", bia.id]);
     expect(t?.notes[0].text).toBe("Por favor, verifique");
-    expect(t?.history.filter((h) => h.action === "ATRIBUICAO").length).toBe(2);
+    expect(t?.history.filter((h) => h.action === "ATRIBUICAO" && h.field === "Responsável").length).toBe(2);
+    expect(t?.history.some((h) => h.field === "Tempo trabalhado" && /^Bia trabalhou/.test(h.newValue ?? ""))).toBe(true);
 
     // Sem tarefa e sem metadados do e-mail: mensagem clara.
     await expect(assignEmailTask(ana, { responsibleId: bia.id, threadId: "19aaaaaaaaaaaaaa", reopen: true })).rejects.toThrow(/Abrir tarefa/);
@@ -253,6 +259,132 @@ describe.runIf(run)("integração com o banco", () => {
     await changeStatus(chefe, t.id, "ABERTA"); // admin pode voltar
     await changeStatus(ana, t.id, "CANCELADO");
     expect((await getTaskForUser(ana, t.id))?.canceledAt).toBeInstanceOf(Date);
+  });
+
+  it("Pause/Play: o tempo trabalhado soma só os períodos em andamento", async () => {
+    const t = await createTask(ana, { ...nova(), title: "Cronômetro", description: "", responsibleId: ana.id, dueAt: null });
+    await changeStatus(ana, t.id, "EM_ANDAMENTO");
+    await changeStatus(ana, t.id, "PAUSADA");
+    let s1 = await prisma.taskWorkSession.findMany({ where: { taskId: t.id } });
+    expect(s1.length).toBe(1);
+    expect(s1[0].endedAt).toBeInstanceOf(Date);
+    await expect(changeStatus(ana, t.id, "PAUSADA")).rejects.toThrow(/Não é permitido/);
+
+    await changeStatus(ana, t.id, "EM_ANDAMENTO"); // Retomar abre outro período
+    s1 = await prisma.taskWorkSession.findMany({ where: { taskId: t.id }, orderBy: { startedAt: "asc" } });
+    expect(s1.length).toBe(2);
+    expect(s1[1].endedAt).toBeNull();
+
+    // Concluir com período informado ajusta o 1º início e fecha o período aberto no fim.
+    const start = new Date(s1[0].startedAt.getTime() - 30 * 60_000);
+    const end = new Date();
+    await changeStatus(ana, t.id, "CONCLUIDO", undefined, { startedAt: start, completedAt: end });
+    const done = await getTaskForUser(ana, t.id);
+    expect(done?.workSessions.every((x) => x.endedAt)).toBe(true);
+    expect(done?.workSessions[0].startedAt.getTime()).toBe(start.getTime());
+    expect(workedMs(done!.workSessions)).toBeGreaterThanOrEqual(30 * 60_000);
+
+    // Fim antes do último Play é recusado.
+    const t2 = await createTask(ana, { ...nova(), title: "Fim inválido", description: "", responsibleId: ana.id, dueAt: null });
+    await changeStatus(ana, t2.id, "EM_ANDAMENTO");
+    await expect(changeStatus(ana, t2.id, "CONCLUIDO", undefined, { completedAt: new Date(Date.now() - 3_600_000) })).rejects.toThrow(/último Play/);
+  });
+
+  it("Concluir etapa e atribuir: o tempo fica com quem saiu e a tarefa volta a Aberta", async () => {
+    const t = await createTask(ana, { ...nova(), title: "Etapas", description: "", responsibleId: ana.id, dueAt: null });
+    await changeStatus(ana, t.id, "EM_ANDAMENTO");
+    await prisma.taskWorkSession.updateMany({ where: { taskId: t.id }, data: { startedAt: new Date(Date.now() - 2 * 3_600_000) } });
+    await expect(handoffTask(ana, t.id, ana.id, { reopen: false, stage: true })).rejects.toThrow(/outra pessoa/);
+    await handoffTask(ana, t.id, bia.id, { reopen: false, stage: true, note: "Parte da Ana pronta" });
+
+    let task = await getTaskForUser(chefe, t.id);
+    expect([task?.status, task?.responsibleId]).toEqual(["ABERTA", bia.id]);
+    expect(task?.workSessions.map((x) => [x.userId, !!x.endedAt])).toEqual([[ana.id, true]]);
+    expect(task?.history.find((h) => h.action === "ETAPA")?.newValue).toMatch(/Ana trabalhou 2h/);
+
+    await changeStatus(bia, t.id, "EM_ANDAMENTO");
+    task = await getTaskForUser(chefe, t.id);
+    expect(task?.workSessions.map((x) => x.userId)).toEqual([ana.id, bia.id]);
+    const per = statsByUser([task!]);
+    expect(per.find((u) => u.userId === ana.id)?.workedMs).toBeGreaterThanOrEqual(2 * 3_600_000);
+
+    // Atribuir comum de tarefa em andamento também fecha o tempo e volta a Aberta.
+    await handoffTask(bia, t.id, chefe.id, { reopen: false });
+    task = await getTaskForUser(chefe, t.id);
+    expect(task?.status).toBe("ABERTA");
+    expect(task?.workSessions.every((x) => x.endedAt)).toBe(true);
+  });
+
+  it("gera o PDF do relatório com dados reais", async () => {
+    const { pdf, count } = await buildReportPdf({ ...chefe, name: chefe.name }, parseFilters({}));
+    expect(count).toBeGreaterThan(0);
+    expect(Buffer.from(pdf.slice(0, 5)).toString()).toBe("%PDF-");
+  });
+
+  it("apelido é o nome exibido em todo lugar; o nome completo continua guardado", async () => {
+    const t = await createTask(ana, { ...nova(), title: "Com apelido", description: "", responsibleId: bia.id, dueAt: null });
+    await prisma.user.update({ where: { id: bia.id }, data: { nickname: "Bi" } });
+
+    const full = await getTaskForUser(chefe, t.id);
+    expect(full?.responsible.name).toBe("Bi");
+    const listed = (await findTasks(chefe, parseFilters({}))).find((x) => x.id === t.id);
+    expect(listed?.responsible.name).toBe("Bi");
+    const u = await prisma.user.findUniqueOrThrow({ where: { id: bia.id } });
+    expect([u.name, u.nickname, (await fullNames()).get(bia.id)]).toEqual(["Bi", "Bi", "Bia"]);
+    const picked = await prisma.user.findUniqueOrThrow({ where: { id: bia.id }, select: { name: true } });
+    expect(picked.name).toBe("Bi");
+
+    // Apelido em branco: volta ao nome completo.
+    await prisma.user.update({ where: { id: bia.id }, data: { nickname: null } });
+    expect((await getTaskForUser(chefe, t.id))?.responsible.name).toBe("Bia");
+  });
+
+  it("tarefa concluída: só admin edita (inclusive o período) e exclui", async () => {
+    const t = await createTask(ana, { ...nova(), createdAt: new Date(Date.now() - 6 * 3_600_000), title: "Para editar", description: "", responsibleId: ana.id, dueAt: null });
+    await changeStatus(ana, t.id, "EM_ANDAMENTO");
+    await changeStatus(ana, t.id, "CONCLUIDO");
+    const base = { title: "Editada", description: "", responsibleId: ana.id, requesterEmail: "a@b.org", createdAt: t.createdAt, dueAt: null };
+
+    await expect(updateTask(ana, t.id, base)).rejects.toThrow(/administrador/);
+    await expect(deleteTask(ana, t.id)).rejects.toThrow(/administradores/);
+
+    const start = new Date(Date.now() - 5 * 3_600_000);
+    const end = new Date(Date.now() - 3 * 3_600_000);
+    await updateTask(chefe, t.id, base, { startedAt: start, completedAt: end });
+    const edited = await getTaskForUser(chefe, t.id);
+    expect(edited?.title).toBe("Editada");
+    expect(edited?.completedAt?.getTime()).toBe(end.getTime());
+    expect(workedMs(edited!.workSessions)).toBe(2 * 3_600_000);
+    expect(edited?.history.some((h) => h.field === "Execução")).toBe(true);
+
+    // Tarefa aberta não pode ser excluída.
+    const aberta = await createTask(ana, { ...nova(), title: "Aberta", description: "", responsibleId: ana.id, dueAt: null });
+    await expect(deleteTask(chefe, aberta.id)).rejects.toThrow(/concluídas ou canceladas/);
+
+    await deleteTask(chefe, t.id);
+    expect(await prisma.task.findUnique({ where: { id: t.id } })).toBeNull();
+    expect(await prisma.taskWorkSession.count({ where: { taskId: t.id } })).toBe(0);
+  });
+
+  it("excluir usuário: transfere as abertas; sem histórico apaga, com histórico só esconde", async () => {
+    const dani = await prisma.user.create({ data: { email: "dani@ex.org", name: "Dani" } });
+    const eva = await prisma.user.create({ data: { email: "eva@ex.org", name: "Eva" } });
+    await expect(deleteUser(ana, eva.id)).rejects.toThrow(/administradores/);
+    await expect(deleteUser(chefe, chefe.id)).rejects.toThrow(/si mesmo/);
+
+    // Sem histórico nenhum: apagado de vez.
+    expect(await deleteUser(chefe, eva.id)).toEqual({ removed: true, transferred: 0 });
+    expect(await prisma.user.findUnique({ where: { id: eva.id } })).toBeNull();
+
+    // Com tarefa aberta: precisa escolher para quem passar.
+    const t = await createTask(ana, { ...nova(), title: "Da Dani", description: "", responsibleId: dani.id, dueAt: null });
+    await addNote(dani, t.id, "Comecei a ver"); // histórico próprio: o cadastro fica guardado
+    await expect(deleteUser(chefe, dani.id)).rejects.toThrow(/Escolha para quem passar/);
+    expect(await deleteUser(chefe, dani.id, bia.id)).toEqual({ removed: false, transferred: 1 });
+    expect((await getTaskForUser(chefe, t.id))?.responsibleId).toBe(bia.id);
+    const d = await prisma.user.findUniqueOrThrow({ where: { id: dani.id } });
+    expect([d.active, !!d.deletedAt]).toEqual([false, true]);
+    expect((await assignableUsers()).some((u) => u.id === dani.id)).toBe(false);
   });
 
   it("gera relatório e planilha", async () => {
