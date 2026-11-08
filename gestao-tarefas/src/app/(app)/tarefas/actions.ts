@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { ZodError } from "zod";
 import { requireUser } from "@/lib/current-user";
 import { getMessage, GmailNotAuthorizedError } from "@/lib/gmail";
-import { addNote, changeStatus, createTask, ServiceError, updateTask } from "@/lib/task-service";
+import { addNote, changeStatus, createTask, deleteTask, handoffTask, ServiceError, updateTask } from "@/lib/task-service";
 import { parseLocalDateTime, type TaskStatusValue } from "@/lib/time";
 import { INITIAL_STATUSES, STATUS_ORDER } from "@/lib/status";
 
@@ -44,7 +44,15 @@ export async function saveTaskAction(_prev: FormState, fd: FormData): Promise<Fo
   let taskId: number;
   try {
     if (id) {
-      taskId = (await updateTask(user, id, input)).id;
+      // Tarefa concluída (só administrador): o formulário também traz o período de execução.
+      let execution;
+      if (fd.has("executionStart")) {
+        const startedAt = parseLocalDateTime(str(fd, "executionStart"));
+        const completedAt = parseLocalDateTime(str(fd, "executionEnd"));
+        if (!startedAt || !completedAt) return { error: "Informe a data-hora inicial e a final" };
+        execution = { startedAt, completedAt };
+      }
+      taskId = (await updateTask(user, id, input, execution)).id;
     } else {
       const status = str(fd, "status") as TaskStatusValue;
       if (!INITIAL_STATUSES.includes(status)) return { error: "Status inválido" };
@@ -103,4 +111,34 @@ export async function addNoteAction(_prev: FormState, fd: FormData): Promise<For
   }
   revalidatePath(`/tarefas/${Number(fd.get("id"))}`);
   return {};
+}
+
+/**
+ * "Atribuir" e "Concluir etapa e atribuir": passa a tarefa para outra pessoa.
+ * O tempo trabalhado por quem sai fica registrado no histórico.
+ */
+export async function handoffAction(_prev: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const id = Number(fd.get("id"));
+  const responsibleId = str(fd, "responsibleId");
+  if (!responsibleId) return { error: "Escolha a pessoa" };
+  try {
+    await handoffTask(user, id, responsibleId, { reopen: false, stage: str(fd, "mode") === "etapa", note: str(fd, "note") });
+  } catch (e) {
+    return { error: errorMessage(e) };
+  }
+  revalidatePath("/", "layout");
+  return {};
+}
+
+/** Exclui de vez uma tarefa concluída ou cancelada (só administrador). */
+export async function deleteTaskAction(_prev: FormState, fd: FormData): Promise<FormState> {
+  const user = await requireUser();
+  try {
+    await deleteTask(user, Number(fd.get("id")));
+  } catch (e) {
+    return { error: errorMessage(e) };
+  }
+  revalidatePath("/", "layout");
+  redirect("/tarefas?status=CONCLUIDO");
 }

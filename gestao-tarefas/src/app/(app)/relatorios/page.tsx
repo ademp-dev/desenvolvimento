@@ -6,13 +6,16 @@ import { requireAdmin } from "@/lib/current-user";
 import { filtersToQuery, parseFilters } from "@/lib/filters";
 import { findTasks, MAX_ROWS, responsibleOptions } from "@/lib/queries";
 import { computeStats, statsByUser } from "@/lib/stats";
-import { formatDuration } from "@/lib/time";
+import { hasGmailSendAccess } from "@/lib/gmail";
+import { formatDateTime, formatDuration, formatWorked } from "@/lib/time";
+import { SendReportForm } from "./SendReportForm";
 
 export default async function ReportPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const admin = await requireAdmin();
-  const filters = parseFilters(await searchParams);
+  const sp = await searchParams;
+  const filters = parseFilters(sp);
   const now = new Date();
-  const [tasks, users] = await Promise.all([findTasks(admin, filters, now), responsibleOptions(admin)]);
+  const [tasks, users, canSend] = await Promise.all([findTasks(admin, filters, now), responsibleOptions(admin), hasGmailSendAccess(admin.id)]);
   const stats = computeStats(tasks, now);
   const perUser = statsByUser(tasks, now);
   const qs = filtersToQuery(filters);
@@ -27,13 +30,17 @@ export default async function ReportPage({ searchParams }: { searchParams: Promi
             Tarefas de todos os usuários · {tasks.length} resultado(s){tasks.length >= MAX_ROWS && ` (limitado a ${MAX_ROWS})`}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <a className="btn-secondary" href={`/api/relatorios/exportar?formato=pdf${qs ? `&${qs}` : ""}`} target="_blank" rel="noopener">
+            ⬇ PDF
+          </a>
           <a className="btn-secondary" href={`/api/relatorios/exportar?formato=xlsx${qs ? `&${qs}` : ""}`}>
             ⬇ Excel
           </a>
           <a className="btn-secondary" href={`/api/relatorios/exportar?formato=csv${qs ? `&${qs}` : ""}`}>
             ⬇ CSV
           </a>
+          <SendReportForm qs={qs} canSend={canSend} defaultSubject={`Relatório geral de tarefas — ${formatDateTime(now)}`} startOpen={sp.enviar === "1"} />
         </div>
       </div>
 
@@ -51,11 +58,13 @@ export default async function ReportPage({ searchParams }: { searchParams: Promi
                 <th className="th text-right">Novas</th>
                 <th className="th text-right">Abertas</th>
                 <th className="th text-right">Em andamento</th>
+                <th className="th text-right">Pausadas</th>
                 <th className="th text-right">Concluídas</th>
                 <th className="th text-right">Canceladas</th>
                 <th className="th text-right">Vencidas</th>
                 <th className="th text-right">Concluídas c/ atraso</th>
                 <th className="th">Tempo médio de conclusão</th>
+                <th className="th">Tempo trabalhado</th>
               </tr>
             </thead>
             <tbody className="tabular-nums">
@@ -69,16 +78,18 @@ export default async function ReportPage({ searchParams }: { searchParams: Promi
                   <td className="td text-right">{u.byStatus.CRIADO}</td>
                   <td className="td text-right">{u.byStatus.ABERTA}</td>
                   <td className="td text-right">{u.byStatus.EM_ANDAMENTO}</td>
+                  <td className="td text-right">{u.byStatus.PAUSADA}</td>
                   <td className="td text-right">{u.byStatus.CONCLUIDO}</td>
                   <td className="td text-right">{u.byStatus.CANCELADO}</td>
                   <td className={`td text-right ${u.overdue ? "font-semibold text-[#d93025]" : ""}`}>{u.overdue}</td>
                   <td className="td text-right">{u.completedLate}</td>
                   <td className="td">{u.avgCompletionMs === null ? "—" : formatDuration(u.avgCompletionMs)}</td>
+                  <td className="td font-medium">{formatWorked(u.workedMs)}</td>
                 </tr>
               ))}
               {perUser.length === 0 && (
                 <tr>
-                  <td className="td text-center text-ink-3" colSpan={10}>
+                  <td className="td text-center text-ink-3" colSpan={12}>
                     Sem dados.
                   </td>
                 </tr>

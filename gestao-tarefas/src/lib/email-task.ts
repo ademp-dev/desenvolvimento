@@ -3,7 +3,7 @@ import { prisma } from "./db";
 import { Actor, canViewTask, isAdmin } from "./permissions";
 import { allowedTransitions, STATUS_LABEL } from "./status";
 import { addNote, changeStatus, createTask, handoffTask, ServiceError, taskInclude, type EmailSourceInput, type ExecutionPeriod } from "./task-service";
-import { elapsedMs, formatDateTime, formatDuration, isOverdue, type TaskStatusValue } from "./time";
+import { elapsedMs, formatDateTime, formatDuration, formatWorked, isOverdue, workedMs, type TaskStatusValue } from "./time";
 
 // Fluxo dos botões do complemento do Gmail. Todo e-mail "nasce" como Nova:
 // a tarefa só é gravada no primeiro clique (Abrir tarefa, Play, Concluir ou
@@ -11,7 +11,7 @@ import { elapsedMs, formatDateTime, formatDuration, isOverdue, type TaskStatusVa
 // decorrido refletir há quanto tempo o pedido espera.
 
 /** Status que os botões podem aplicar. */
-export const EMAIL_ACTIONS: TaskStatusValue[] = ["ABERTA", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"];
+export const EMAIL_ACTIONS: TaskStatusValue[] = ["ABERTA", "EM_ANDAMENTO", "PAUSADA", "CONCLUIDO", "CANCELADO"];
 
 /** Tarefa (a mais recente) ligada à mensagem e visível ao usuário. */
 export async function taskForMessage(actor: Actor, gmailMessageId: string) {
@@ -24,6 +24,7 @@ export async function emailTaskSummary(actor: Actor, gmailMessageId: string, bas
   const t = await taskForMessage(actor, gmailMessageId);
   if (!t) return null;
   const status = t.status as TaskStatusValue;
+  const open = t.workSessions.find((s) => !s.endedAt);
   return {
     id: t.id,
     title: t.title,
@@ -32,9 +33,15 @@ export async function emailTaskSummary(actor: Actor, gmailMessageId: string, bas
     elapsed: formatDuration(elapsedMs(t, now)),
     overdue: isOverdue(t, now),
     responsible: t.responsible.name,
+    responsibleEmail: t.responsible.email,
     responsibleId: t.responsibleId,
-    // Para sugerir o início ao concluir; a execução aparece depois de concluída.
-    startedAt: t.startedAt?.toISOString() ?? null,
+    // Tempo trabalhado (Play → Pause). Com o relógio correndo, a extensão soma
+    // `workedClosedMs` + (agora − `runningSince`) para mostrar em tempo real.
+    worked: formatWorked(workedMs(t.workSessions, now)),
+    workedClosedMs: workedMs(t.workSessions.filter((s) => s.endedAt), now),
+    runningSince: open?.startedAt.toISOString() ?? null,
+    // Para sugerir o início ao concluir (primeiro Play); a execução aparece depois de concluída.
+    startedAt: (t.workSessions[0]?.startedAt ?? t.startedAt)?.toISOString() ?? null,
     execution: status === "CONCLUIDO" && t.startedAt && t.completedAt ? `${formatDateTime(t.startedAt)} até ${formatDateTime(t.completedAt)}` : null,
     url: `${baseUrl}/tarefas/${t.id}`,
     allowed: allowedTransitions(status, isAdmin(actor)).filter((s) => EMAIL_ACTIONS.includes(s)),
@@ -101,6 +108,8 @@ export interface AssignInput {
   threadId?: string | null;
   /** true = "Encaminhar e atribuir": a tarefa fica "Aberta" para o novo responsável. */
   reopen: boolean;
+  /** true = "Concluir etapa e atribuir": registra a etapa de quem sai. */
+  stage?: boolean;
   note?: string | null;
 }
 
@@ -116,7 +125,7 @@ export async function assignEmailTask(actor: Actor & { email: string }, input: A
   if (!task && threadId) task = await taskForThread(actor, threadId);
 
   if (task) {
-    await handoffTask(actor, task.id, input.responsibleId, { reopen: input.reopen, note: input.note });
+    await handoffTask(actor, task.id, input.responsibleId, { reopen: input.reopen, stage: input.stage, note: input.note });
     return task.id;
   }
   if (!input.email) {

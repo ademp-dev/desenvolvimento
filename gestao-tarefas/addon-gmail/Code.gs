@@ -2,7 +2,8 @@
  * Complemento do Gmail — "Tarefas ADEMP".
  *
  * Painel lateral (ao abrir um e-mail): status da tarefa e as ações
- *   Abrir tarefa -> Aberta | Play -> Em andamento | Concluir -> Concluída | Cancelar -> Cancelada
+ *   Abrir tarefa -> Aberta | Play -> Em andamento | Pause -> Pausada | Concluir -> Concluída | Cancelar -> Cancelada
+ * O tempo trabalhado (só entre Play e Pause) aparece no cartão.
  * Todo e-mail começa como "Nova"; a tarefa só é gravada no primeiro clique.
  * Concluir pede a data-hora inicial e a final (sugeridas, editáveis).
  *
@@ -16,13 +17,14 @@
  * Configuração: Propriedades do script -> APP_URL = https://url-do-app (sem barra no fim).
  */
 
-var STATUS_LABEL = { CRIADO: 'Nova', ABERTA: 'Aberta', EM_ANDAMENTO: 'Em andamento', CONCLUIDO: 'Concluída', CANCELADO: 'Cancelada' };
-var STATUS_COLOR = { CRIADO: '#0b57d0', ABERTA: '#b06000', EM_ANDAMENTO: '#0842a0', CONCLUIDO: '#188038', CANCELADO: '#5f6368' };
+var STATUS_LABEL = { CRIADO: 'Nova', ABERTA: 'Aberta', EM_ANDAMENTO: 'Em andamento', PAUSADA: 'Pausada', CONCLUIDO: 'Concluída', CANCELADO: 'Cancelada' };
+var STATUS_COLOR = { CRIADO: '#0b57d0', ABERTA: '#b06000', EM_ANDAMENTO: '#0842a0', PAUSADA: '#8a4b00', CONCLUIDO: '#188038', CANCELADO: '#5f6368' };
 
 // Ações na ordem do fluxo: nome (dica ao passar o mouse) e ícone (mesmos da extensão).
 var ACTIONS = [
   { to: 'ABERTA', label: 'Abrir tarefa', icon: 'acao-abrir.png' },
   { to: 'EM_ANDAMENTO', label: 'Play — iniciar', icon: 'acao-play.png' },
+  { to: 'PAUSADA', label: 'Pause — pausar a contagem', icon: 'acao-pausar.png' },
   { to: 'CONCLUIDO', label: 'Concluir', icon: 'acao-concluir.png' },
   { to: 'CANCELADO', label: 'Cancelar (escreva o motivo na observação)', icon: 'acao-cancelar.png' },
 ];
@@ -104,7 +106,7 @@ function onHomepage(e) {
     .addSection(
       CardService.newCardSection().addWidget(
         CardService.newTextParagraph().setText(
-          'Abra um e-mail para ver o status e usar as ações Abrir tarefa, Play, Concluir e Cancelar.<br><br>' +
+          'Abra um e-mail para ver o status e usar as ações Abrir tarefa, Play, Pause, Concluir e Cancelar.<br><br>' +
             'Dica: deixe este painel aberto. Ele acompanha cada e-mail que você abrir.'
         )
       )
@@ -184,11 +186,27 @@ function buildCard_(msg, task, ctx) {
   var info = CardService.newCardSection().addWidget(
     CardService.newDecoratedText()
       .setTopLabel('Status')
-      .setText('<b><font color="' + STATUS_COLOR[status] + '">' + STATUS_LABEL[status] + '</font></b>')
-      .setBottomLabel(task ? 'Há ' + task.elapsed + ' · ' + task.responsible : 'Ainda não registrada')
+      .setText('<b><font color="' + (STATUS_COLOR[status] || '#444746') + '">' + (STATUS_LABEL[status] || (task && task.statusLabel) || status) + '</font></b>')
+      .setBottomLabel(task ? 'Há ' + task.elapsed : 'Ainda não registrada')
+      .setWrapText(true)
+  );
+  // Responsável sempre visível (mesmo destaque do app e da extensão).
+  info.addWidget(
+    CardService.newDecoratedText()
+      .setTopLabel('Responsável')
+      .setStartIcon(CardService.newIconImage().setIcon(CardService.Icon.PERSON))
+      .setText(task ? '<b><font color="#025148">' + esc_(task.responsible) + '</font></b>' : '<font color="#5f6368">Ninguém ainda</font>')
+      .setBottomLabel(task ? task.responsibleEmail || '' : 'Definido no primeiro clique (veja "Detalhes da tarefa")')
       .setWrapText(true)
   );
   info.addWidget(CardService.newTextParagraph().setText('<b>' + esc_(task ? task.title : msg.subject) + '</b>'));
+  if (task && task.worked && (task.runningSince || task.workedClosedMs > 0)) {
+    info.addWidget(
+      CardService.newTextParagraph().setText(
+        '⏱ Trabalhado: <b>' + esc_(task.worked) + '</b>' + (task.runningSince ? ' <font color="#188038">(contando)</font>' : ' <font color="#5f6368">(pausado)</font>')
+      )
+    );
+  }
   if (task && task.execution) {
     info.addWidget(CardService.newTextParagraph().setText('<font color="#5f6368">Execução: ' + esc_(task.execution) + '</font>'));
   }
@@ -198,7 +216,7 @@ function buildCard_(msg, task, ctx) {
   card.addSection(info);
 
   // 2. Ações: só ícones, todos numa linha (o nome aparece ao passar o mouse).
-  //    Status (Abrir, Play, Concluir, Cancelar) + Atribuir + Abrir app.
+  //    Status (Abrir, Play, Pause, Concluir, Cancelar) + Atribuir + Abrir app.
   var allowed = task ? task.allowed : ['ABERTA', 'EM_ANDAMENTO', 'CONCLUIDO', 'CANCELADO'];
   var actions = CardService.newCardSection().setHeader('Ações');
   var icons = CardService.newButtonSet();
@@ -209,12 +227,18 @@ function buildCard_(msg, task, ctx) {
       a.to === 'CONCLUIDO'
         ? CardService.newAction().setFunctionName('onConcludeOpen').setParameters({ msg: JSON.stringify(msg), startedAt: (task && task.startedAt) || '' })
         : statusAction_(a.to, msg);
-    icons.addButton(iconButton_(a.icon, a.label).setOnClickAction(action));
+    var label = a.to === 'EM_ANDAMENTO' && status === 'PAUSADA' ? 'Play — retomar' : a.label;
+    icons.addButton(iconButton_(a.icon, label).setOnClickAction(action));
   });
   if (allowed.length) {
     icons.addButton(
       iconButton_('acao-atribuir.png', 'Atribuir a um usuário').setOnClickAction(
-        CardService.newAction().setFunctionName('onAssignOpen').setParameters({ msg: JSON.stringify(msg) })
+        CardService.newAction().setFunctionName('onAssignOpen').setParameters({ msg: JSON.stringify(msg), stage: '' })
+      )
+    );
+    icons.addButton(
+      iconButton_('acao-etapa.png', 'Concluir minha etapa e atribuir').setOnClickAction(
+        CardService.newAction().setFunctionName('onAssignOpen').setParameters({ msg: JSON.stringify(msg), stage: '1' })
       )
     );
   }
@@ -261,18 +285,25 @@ function iconButton_(file, label) {
   return CardService.newImageButton().setIconUrl(appUrl_() + '/icones/' + file).setAltText(label);
 }
 
-/** "Atribuir": abre a lista de usuários cadastrados. */
+/**
+ * "Atribuir" e "Concluir minha etapa e atribuir" (stage = '1'): abre a lista
+ * de usuários cadastrados. Nos dois casos o tempo trabalhado até aqui fica
+ * com quem passa a tarefa; a etapa também fica registrada no histórico.
+ */
 function onAssignOpen(e) {
   var msg = JSON.parse(e.commonEventObject.parameters.msg);
+  var stage = e.commonEventObject.parameters.stage === '1';
   try {
     var ctx = api_('get', '/api/addon/context?messageId=' + encodeURIComponent(msg.gmailMessageId));
     var current = ctx.task ? ctx.task.responsibleId : null;
     var select = CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.DROPDOWN)
-      .setTitle('Atribuir a')
+      .setTitle(stage ? 'Passar para' : 'Atribuir a')
       .setFieldName('assignTo');
     ctx.users.forEach(function (u) {
-      select.addItem(u.name + ' (' + u.email + ')', u.id, u.id === current);
+      // Na etapa, a tarefa vai para outra pessoa: o responsável atual não aparece.
+      if (stage && u.id === current) return;
+      select.addItem(u.name + ' (' + u.email + ')', u.id, !stage && u.id === current);
     });
     var section = CardService.newCardSection()
       .addWidget(CardService.newTextParagraph().setText('<b>' + esc_(ctx.task ? ctx.task.title : msg.subject) + '</b>'))
@@ -282,16 +313,27 @@ function onAssignOpen(e) {
         CardService.newButtonSet()
           .addButton(
             CardService.newTextButton()
-              .setText('Atribuir')
+              .setText(stage ? 'Concluir etapa e atribuir' : 'Atribuir')
               .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-              .setOnClickAction(CardService.newAction().setFunctionName('onPanelAssign').setParameters({ msg: JSON.stringify(msg) }))
+              .setOnClickAction(
+                CardService.newAction().setFunctionName('onPanelAssign').setParameters({ msg: JSON.stringify(msg), stage: stage ? '1' : '' })
+              )
           )
           .addButton(CardService.newTextButton().setText('Voltar').setOnClickAction(CardService.newAction().setFunctionName('onBack')))
       );
     if (!ctx.task) {
       section.addWidget(CardService.newTextParagraph().setText('Este e-mail ainda não tem tarefa: ela será criada como <b>Aberta</b> para o usuário escolhido.'));
+    } else if (stage) {
+      section.addWidget(
+        CardService.newTextParagraph().setText(
+          'Sua parte fica registrada como etapa concluída, com o tempo que você trabalhou. A tarefa fica <b>Aberta</b> até a outra pessoa dar o Play.'
+        )
+      );
     }
-    var card = CardService.newCardBuilder().setHeader(header_('Atribuir a um usuário')).addSection(section).build();
+    var card = CardService.newCardBuilder()
+      .setHeader(header_(stage ? 'Concluir minha etapa e atribuir' : 'Atribuir a um usuário'))
+      .addSection(section)
+      .build();
     return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().pushCard(card)).build();
   } catch (err) {
     return notify_('Erro: ' + err.message);
@@ -300,14 +342,16 @@ function onAssignOpen(e) {
 
 function onPanelAssign(e) {
   var msg = JSON.parse(e.commonEventObject.parameters.msg);
+  var stage = e.commonEventObject.parameters.stage === '1';
   var responsibleId = formValue_(e, 'assignTo');
-  if (!responsibleId) return notify_('Escolha o usuário em "Atribuir a".');
+  if (!responsibleId) return notify_('Escolha a pessoa na lista.');
   try {
-    api_('post', '/api/addon/assign', { responsibleId: responsibleId, note: formValue_(e, 'assignNote'), email: msg, reopen: false });
+    api_('post', '/api/addon/assign', { responsibleId: responsibleId, note: formValue_(e, 'assignNote'), email: msg, reopen: false, stage: stage });
     var ctx = api_('get', '/api/addon/context?messageId=' + encodeURIComponent(msg.gmailMessageId));
+    var who = ctx.task ? ctx.task.responsible : 'usuário';
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().popCard().updateCard(buildCard_(msg, ctx.task, ctx)))
-      .setNotification(CardService.newNotification().setText('Tarefa atribuída a ' + (ctx.task ? ctx.task.responsible : 'usuário')))
+      .setNotification(CardService.newNotification().setText(stage ? 'Etapa concluída. Tarefa passada para ' + who : 'Tarefa atribuída a ' + who))
       .build();
   } catch (err) {
     return notify_('Erro: ' + err.message);
@@ -426,7 +470,7 @@ function onStatusButton(e) {
     var ctx = api_('get', '/api/addon/context?messageId=' + encodeURIComponent(msg.gmailMessageId));
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(buildCard_(msg, res.task, ctx)))
-      .setNotification(CardService.newNotification().setText('Status: ' + STATUS_LABEL[params.to]))
+      .setNotification(CardService.newNotification().setText('Status: ' + (STATUS_LABEL[params.to] || params.to)))
       .build();
   } catch (err) {
     return notify_('Erro: ' + err.message);
@@ -484,7 +528,7 @@ function onComposeAction(e) {
       JSON.stringify({ gmailKeys: Object.keys(e.gmail || {}), hasMessageId: !!(e.gmail && e.gmail.messageId), hasThreadId: !!(e.gmail && e.gmail.threadId) })
   );
 
-  var card = CardService.newCardBuilder().setHeader(header_('Suas tarefas'));
+  var card = CardService.newCardBuilder().setHeader(header_('Tarefas sob sua responsabilidade'));
   var summary = CardService.newCardSection();
   var s = null;
   try {
@@ -492,7 +536,8 @@ function onComposeAction(e) {
     summary.addWidget(
       CardService.newTextParagraph().setText(
         'Novas: <b>' + s.counts.CRIADO + '</b> · Abertas: <b>' + s.counts.ABERTA + '</b><br>' +
-          'Em andamento: <b>' + s.counts.EM_ANDAMENTO + '</b> · Vencidas: <b><font color="#d93025">' + s.counts.overdue + '</font></b>'
+          'Em andamento: <b>' + s.counts.EM_ANDAMENTO + '</b> · Pausadas: <b>' + (s.counts.PAUSADA || 0) + '</b><br>' +
+          'Vencidas: <b><font color="#d93025">' + s.counts.overdue + '</font></b>'
       )
     );
   } catch (err) {

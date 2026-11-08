@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { filtersToQuery, type SortKey, type TaskFilters } from "@/lib/filters";
 import type { TaskRow } from "@/lib/task-service";
-import { formatDateTime, formatShortDate, isOverdue, type TaskStatusValue } from "@/lib/time";
+import { formatDateTime, formatShortDate, isOpen, isOverdue, type TaskStatusValue } from "@/lib/time";
 import { Avatar } from "./Brand";
 import { Elapsed } from "./Elapsed";
 import { Icon } from "./Icon";
-import { StatusBadge } from "./StatusBadge";
+import { ResponsibleTag, StatusBadge } from "./StatusBadge";
+import { DeleteTaskButton } from "./TaskActions";
 
 interface Props {
   tasks: TaskRow[];
@@ -14,6 +15,8 @@ interface Props {
   /** Mostra a barra de ferramentas (atualizar, ordenação, contagem). */
   toolbar?: boolean;
   emptyText?: string;
+  /** Administrador: Editar e Excluir direto na linha das tarefas encerradas. */
+  manageClosed?: boolean;
 }
 
 const SORTS: { key: SortKey; label: string; dir: "asc" | "desc" }[] = [
@@ -30,7 +33,7 @@ const SORTS: { key: SortKey; label: string; dir: "asc" | "desc" }[] = [
  * descrição, à direita o tempo decorrido e a data. Tarefas "Novas" ficam em
  * negrito, como e-mails não lidos.
  */
-export function TaskList({ tasks, filters, path, toolbar = true, emptyText = "Nenhuma tarefa por aqui." }: Props) {
+export function TaskList({ tasks, filters, path, toolbar = true, emptyText = "Nenhuma tarefa por aqui.", manageClosed = false }: Props) {
   const now = new Date();
   const qs = filtersToQuery(filters);
   return (
@@ -75,7 +78,7 @@ export function TaskList({ tasks, filters, path, toolbar = true, emptyText = "Ne
             const unread = status === "CRIADO";
             const who = t.requester?.name ?? t.requester?.email ?? "Sem solicitante";
             return (
-              <li key={t.id} className="relative border-b border-[#f1f3f4] hover:z-10 hover:shadow-[inset_1px_0_0_#dadce0,inset_-1px_0_0_#dadce0,0_1px_2px_0_rgba(60,64,67,.3),0_1px_3px_1px_rgba(60,64,67,.15)]">
+              <li key={t.id} className="group relative border-b border-[#f1f3f4] hover:z-10 hover:shadow-[inset_1px_0_0_#dadce0,inset_-1px_0_0_#dadce0,0_1px_2px_0_rgba(60,64,67,.3),0_1px_3px_1px_rgba(60,64,67,.15)]">
                 <Link
                   href={`/tarefas/${t.id}`}
                   className={`grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-0.5 px-2 py-2 md:grid-cols-[24px_200px_1fr_auto] md:py-1.5 ${unread ? "bg-white" : "bg-[#f2f6fc]/40"}`}
@@ -99,6 +102,7 @@ export function TaskList({ tasks, filters, path, toolbar = true, emptyText = "Ne
                   </span>
                   <span className="col-span-3 row-start-2 flex min-w-0 items-center gap-2 text-sm md:col-span-1 md:row-start-1 md:col-start-3">
                     <StatusBadge status={status} />
+                    <ResponsibleTag responsible={t.responsible} showLabel={false} className="max-w-36 shrink-0" />
                     <span className={`truncate ${unread ? "font-bold text-ink" : "text-ink"}`}>{t.title}</span>
                     {t.description && <span className="hidden truncate text-ink-3 lg:inline">— {t.description.replace(/\s+/g, " ")}</span>}
                   </span>
@@ -113,14 +117,20 @@ export function TaskList({ tasks, filters, path, toolbar = true, emptyText = "Ne
                         showOverdue={false}
                       />
                     </span>
-                    <span className="hidden md:inline" title={`Responsável: ${t.responsible.name}`}>
-                      <Avatar name={t.responsible.name} email={t.responsible.email} size={22} />
-                    </span>
                     <span className={`w-16 text-right tabular-nums ${unread ? "font-bold text-ink" : "text-ink-2"}`} title={formatDateTime(t.createdAt)}>
                       {formatShortDate(t.createdAt, now)}
                     </span>
                   </span>
                 </Link>
+                {/* Como no Gmail: ao passar o mouse, as ações aparecem sobre a data. */}
+                {manageClosed && !isOpen(status) && (
+                  <span className="absolute top-1/2 right-2 hidden -translate-y-1/2 items-center gap-0.5 rounded-full bg-white pl-2 shadow-sm group-focus-within:flex group-hover:flex">
+                    <Link href={`/tarefas/${t.id}/editar`} className="icon-btn" title="Editar tarefa" aria-label={`Editar tarefa #${t.id}`}>
+                      <Icon name="edit" />
+                    </Link>
+                    <DeleteTaskButton id={t.id} title={t.title} />
+                  </span>
+                )}
               </li>
             );
           })}

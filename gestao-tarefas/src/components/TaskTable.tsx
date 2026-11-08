@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { filtersToQuery, type SortKey, type TaskFilters } from "@/lib/filters";
 import type { TaskRow } from "@/lib/task-service";
-import { formatDateTime, isOverdue, type TaskStatusValue } from "@/lib/time";
+import { formatDateTime, formatWorked, isOverdue, workedMs, type TaskStatusValue } from "@/lib/time";
 import { Elapsed } from "./Elapsed";
-import { OriginBadge, RequesterTag, StatusBadge } from "./StatusBadge";
+import { OriginBadge, RequesterTag, ResponsibleTag, StatusBadge } from "./StatusBadge";
 
 interface Props {
   tasks: TaskRow[];
@@ -45,6 +45,7 @@ export function TaskTable({ tasks, filters, path, variant = "list" }: Props) {
             <SortHeader label="Criada em" k="criacao" filters={filters} path={path} />
             <SortHeader label="Prazo" k="prazo" filters={filters} path={path} />
             <SortHeader label="Tempo decorrido" k="tempo" filters={filters} path={path} />
+            {report && <th className="th">Tempo trabalhado</th>}
             {report && <th className="th">Concluída / cancelada em</th>}
           </tr>
         </thead>
@@ -65,8 +66,8 @@ export function TaskTable({ tasks, filters, path, variant = "list" }: Props) {
                   <RequesterTag requester={t.requester} compact />
                 </td>
                 <td className="td whitespace-nowrap">
-                  {t.responsible.name}
-                  {report && <div className="text-xs text-ink-3">{t.responsible.email}</div>}
+                  <ResponsibleTag responsible={t.responsible} showLabel={false} />
+                  {report && <div className="mt-0.5 text-xs text-ink-3">{t.responsible.email}</div>}
                 </td>
                 <td className="td">
                   <OriginBadge origin={t.origin} />
@@ -85,6 +86,7 @@ export function TaskTable({ tasks, filters, path, variant = "list" }: Props) {
                     dueAt={t.dueAt?.toISOString()}
                   />
                 </td>
+                {report && <td className="td whitespace-nowrap tabular-nums">{formatWorked(workedMs(t.workSessions, now))}</td>}
                 {report && <td className="td whitespace-nowrap tabular-nums">{formatDateTime(t.completedAt ?? t.canceledAt)}</td>}
               </tr>
             );

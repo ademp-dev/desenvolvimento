@@ -1,6 +1,6 @@
 import { prisma } from "./db";
 import { decrypt, encrypt } from "./crypto";
-import { GMAIL_READONLY_SCOPE } from "./config";
+import { GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE } from "./config";
 
 // Acesso à Gmail API em nome do PRÓPRIO usuário logado. Não existe nenhuma
 // função que leia a caixa de outra pessoa: o token usado é sempre o do
@@ -27,10 +27,13 @@ export interface EmailMetadata {
   mailbox: string;
 }
 
-export async function hasGmailAccess(userId: string): Promise<boolean> {
+export async function hasGmailAccess(userId: string, scope: string = GMAIL_READONLY_SCOPE): Promise<boolean> {
   const t = await prisma.googleToken.findUnique({ where: { userId } });
-  return !!t && t.scope.split(" ").includes(GMAIL_READONLY_SCOPE) && (!!t.refreshToken || (t.expiresAt?.getTime() ?? 0) > Date.now());
+  return !!t && t.scope.split(" ").includes(scope) && (!!t.refreshToken || (t.expiresAt?.getTime() ?? 0) > Date.now());
 }
+
+/** O usuário autorizou o app a enviar e-mail pela caixa dele? */
+export const hasGmailSendAccess = (userId: string) => hasGmailAccess(userId, GMAIL_SEND_SCOPE);
 
 async function accessToken(userId: string): Promise<string> {
   const t = await prisma.googleToken.findUnique({ where: { userId } });
@@ -142,4 +145,69 @@ export async function searchMessages(
     (list.messages ?? []).map((m) => gmailGet<GmailMessage>(userId, `/messages/${m.id}?${METADATA_QS}`)),
   );
   return { messages: messages.map((m) => toMetadata(m, mailbox)), nextPageToken: list.nextPageToken };
+}
+
+// --- Envio -------------------------------------------------------------------------
+
+/** Cabeçalho com acentos (RFC 2047); remove quebras de linha para evitar injeção de cabeçalhos. */
+function encodeHeader(value: string): string {
+  const clean = value.replace(/[\r\n]+/g, " ").trim();
+  return /^[\x20-\x7e]*$/.test(clean) ? clean : `=?UTF-8?B?${Buffer.from(clean, "utf8").toString("base64")}?=`;
+}
+
+const base64Lines = (data: Buffer | string) =>
+  (Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8")).toString("base64").replace(/.{76}/g, "$&\r\n");
+
+export interface OutgoingEmail {
+  from: { name: string; email: string };
+  to: string[];
+  subject: string;
+  text: string;
+  attachment?: { filename: string; contentType: string; data: Uint8Array };
+}
+
+/** Monta a mensagem MIME (texto + anexo opcional). */
+export function buildMime(m: OutgoingEmail): string {
+  const boundary = `tarefas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const safeName = (m.attachment?.filename ?? "").replace(/["\r\n]/g, "");
+  const lines = [
+    `From: ${encodeHeader(m.from.name)} <${m.from.email}>`,
+    `To: ${m.to.join(", ")}`,
+    `Subject: ${encodeHeader(m.subject)}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    base64Lines(m.text),
+  ];
+  if (m.attachment) {
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${m.attachment.contentType}; name="${safeName}"`,
+      `Content-Disposition: attachment; filename="${safeName}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      base64Lines(Buffer.from(m.attachment.data)),
+    );
+  }
+  lines.push(`--${boundary}--`, "");
+  return lines.join("\r\n");
+}
+
+/**
+ * Envia pela caixa do PRÓPRIO usuário (a mensagem fica em "Enviados").
+ * Usa o endpoint de upload, que aceita anexos de até 35 MB.
+ */
+export async function sendGmail(userId: string, m: OutgoingEmail): Promise<void> {
+  const token = await accessToken(userId);
+  const res = await fetch("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "message/rfc822" },
+    body: buildMime(m),
+  });
+  if (res.status === 401 || res.status === 403) throw new GmailNotAuthorizedError();
+  if (!res.ok) throw new Error(`Gmail API: ${res.status} ${await res.text()}`);
 }

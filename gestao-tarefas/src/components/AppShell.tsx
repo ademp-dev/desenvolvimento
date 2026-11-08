@@ -12,6 +12,7 @@ export interface ShellCounts {
   CRIADO: number;
   ABERTA: number;
   EM_ANDAMENTO: number;
+  PAUSADA: number;
   overdue: number;
 }
 
@@ -164,6 +165,7 @@ function Sidebar({ collapsed, isAdmin, counts, onNavigate }: { collapsed: boolea
     { href: "/tarefas?status=CRIADO", label: "Novas", icon: "fiber_new", count: counts.CRIADO, match: onList("CRIADO") },
     { href: "/tarefas?status=ABERTA", label: "Abertas", icon: "drafts", count: counts.ABERTA, match: onList("ABERTA") },
     { href: "/tarefas?status=EM_ANDAMENTO", label: "Em andamento", icon: "pending_actions", count: counts.EM_ANDAMENTO, match: onList("EM_ANDAMENTO") },
+    { href: "/tarefas?status=PAUSADA", label: "Pausadas", icon: "pause_circle", count: counts.PAUSADA, match: onList("PAUSADA") },
     { href: "/tarefas?vencidas=1", label: "Vencidas", icon: "alarm", count: counts.overdue, danger: true, match: onList(null, true) },
     { href: "/tarefas?status=CONCLUIDO", label: "Concluídas", icon: "task_alt", match: onList("CONCLUIDO") },
     { href: "/tarefas?status=CANCELADO", label: "Canceladas", icon: "cancel", match: onList("CANCELADO") },

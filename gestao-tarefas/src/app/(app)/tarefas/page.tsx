@@ -2,6 +2,7 @@ import { AutoRefresh } from "@/components/AutoRefresh";
 import { FilterBar } from "@/components/FilterBar";
 import { TaskList } from "@/components/TaskList";
 import { requireUser } from "@/lib/current-user";
+import { isAdmin } from "@/lib/permissions";
 import { filtersToQuery, parseFilters } from "@/lib/filters";
 import { findTasks, MAX_ROWS, responsibleOptions } from "@/lib/queries";
 import { STATUS_LABEL } from "@/lib/status";
@@ -36,7 +37,7 @@ export default async function TasksPage({ searchParams }: { searchParams: Promis
         </summary>
         <FilterBar path="/tarefas" filters={filters} users={users} />
       </details>
-      <TaskList tasks={tasks} filters={filters} path="/tarefas" />
+      <TaskList tasks={tasks} filters={filters} path="/tarefas" manageClosed={isAdmin(user)} />
       {tasks.length >= MAX_ROWS && <p className="text-xs text-ink-3">Exibindo as {MAX_ROWS} mais recentes; refine os filtros.</p>}
     </div>
   );

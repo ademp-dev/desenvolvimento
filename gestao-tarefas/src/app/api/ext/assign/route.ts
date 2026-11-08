@@ -7,7 +7,10 @@ import { ServiceError } from "@/lib/task-service";
 
 export const dynamic = "force-dynamic";
 
-/** Extensão do Chrome: "Atribuir" a tarefa do e-mail a um usuário cadastrado. */
+/**
+ * Extensão do Chrome: "Atribuir" e "Concluir etapa e atribuir" (`stage: true`)
+ * a tarefa do e-mail a um usuário cadastrado.
+ */
 export async function POST(req: Request) {
   const base = appBaseUrl(req);
   try {
@@ -16,7 +19,8 @@ export async function POST(req: Request) {
     }
     const body = (await req.json()) as { mailbox?: string };
     const user = await authenticateExtension(req, body.mailbox);
-    // Atribuir não mexe no status de tarefa existente; e-mail "Nova" vira tarefa "Aberta".
+    // O tempo de quem sai fica registrado; tarefa em andamento/pausada volta a "Aberta".
+    // E-mail "Nova" (sem tarefa) vira tarefa "Aberta".
     const result = await runAssign(user, body, base, false);
     return NextResponse.json(result);
   } catch (e) {

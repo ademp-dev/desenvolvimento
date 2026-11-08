@@ -22,9 +22,9 @@ export async function GET(req: Request) {
       select: { id: true, title: true, status: true, createdAt: true, dueAt: true, completedAt: true, canceledAt: true },
     });
 
-    const counts = { CRIADO: 0, ABERTA: 0, EM_ANDAMENTO: 0, overdue: 0 };
+    const counts = { CRIADO: 0, ABERTA: 0, EM_ANDAMENTO: 0, PAUSADA: 0, overdue: 0 };
     for (const t of open) {
-      counts[t.status as "CRIADO" | "ABERTA" | "EM_ANDAMENTO"]++;
+      counts[t.status as "CRIADO" | "ABERTA" | "EM_ANDAMENTO" | "PAUSADA"]++;
       if (isOverdue(t, now)) counts.overdue++;
     }
 

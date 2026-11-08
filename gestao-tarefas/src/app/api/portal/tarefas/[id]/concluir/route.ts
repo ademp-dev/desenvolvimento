@@ -33,7 +33,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
   }
 
-  const task = await prisma.task.findUnique({ where: { id }, include: { responsible: true } });
+  const task = await prisma.task.findUnique({
+    where: { id },
+    include: { responsible: true, workSessions: { select: { startedAt: true }, orderBy: { startedAt: "asc" } } },
+  });
   if (!task) return NextResponse.json({ error: "Tarefa não encontrada" }, { status: 404 });
   if (!isOpen(task.status as TaskStatusValue)) {
     // Já concluída ou cancelada no sistema de tarefas: nada a fazer.
@@ -48,12 +51,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const now = new Date();
   let completedAt = body.completedAt ? new Date(body.completedAt) : now;
-  if (Number.isNaN(completedAt.getTime()) || completedAt > now || completedAt < task.createdAt) completedAt = now;
+  // Com tempo trabalhado registrado (Play), a conclusão não pode ser antes do último Play.
+  const lastPlay = task.workSessions.at(-1)?.startedAt;
+  if (Number.isNaN(completedAt.getTime()) || completedAt > now || completedAt < task.createdAt || (lastPlay && completedAt < lastPlay)) {
+    completedAt = now;
+  }
 
   try {
     await changeStatus(actor, id, "CONCLUIDO", body.note || "Concluída pelo portal ADEMP (serviço marcado como concluído).", {
       completedAt,
-      startedAt: task.startedAt && task.startedAt <= completedAt ? task.startedAt : completedAt,
+      // Sem Play registrado, o início é o do portal; com Play, vale o primeiro Play.
+      startedAt: lastPlay ? undefined : task.startedAt && task.startedAt <= completedAt ? task.startedAt : completedAt,
     });
     return NextResponse.json({ ok: true, status: "CONCLUIDO" });
   } catch (e) {

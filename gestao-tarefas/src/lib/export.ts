@@ -2,15 +2,22 @@ import ExcelJS from "exceljs";
 import { STATUS_LABEL, ORIGIN_LABEL } from "./status";
 import type { TaskRow } from "./task-service";
 import type { UserStats } from "./stats";
-import { elapsedMs, formatDateTime, formatDuration, msToHours, overdueMs, type TaskStatusValue } from "./time";
+import { elapsedMs, formatDateTime, formatDuration, formatWorked, msToHours, overdueMs, workedByUser, workedMs, type TaskStatusValue } from "./time";
 
 // Exportação do relatório geral para CSV (padrão Excel pt-BR: ";" e BOM) e XLSX.
+
+/** Tempo trabalhado por pessoa numa tarefa, na ordem em que trabalharam. */
+export function workedPerPerson(t: Pick<TaskRow, "workSessions">, now = new Date()) {
+  const names = new Map(t.workSessions.map((s) => [s.userId, s.user.name]));
+  return [...workedByUser(t.workSessions, now)].map(([userId, ms]) => ({ userId, name: names.get(userId) ?? userId, ms }));
+}
 
 export function reportRows(tasks: TaskRow[], now = new Date()) {
   return tasks.map((t) => {
     const status = t.status as TaskStatusValue;
     const elapsed = elapsedMs(t, now);
     const late = overdueMs(t, now);
+    const worked = workedMs(t.workSessions, now);
     return {
       "Nº": t.id,
       Título: t.title,
@@ -30,7 +37,11 @@ export function reportRows(tasks: TaskRow[], now = new Date()) {
       "Tempo decorrido (horas)": msToHours(elapsed),
       "Início da execução": t.startedAt ? formatDateTime(t.startedAt) : "",
       "Concluída/cancelada em": t.completedAt || t.canceledAt ? formatDateTime(t.completedAt ?? t.canceledAt) : "",
-      "Tempo de execução (horas)": status === "CONCLUIDO" && t.startedAt && t.completedAt ? msToHours(t.completedAt.getTime() - t.startedAt.getTime()) : "",
+      "Tempo trabalhado": formatWorked(worked),
+      "Tempo trabalhado (horas)": msToHours(worked),
+      "Tempo por pessoa": workedPerPerson(t, now)
+        .map((p) => `${p.name}: ${formatWorked(p.ms)}`)
+        .join(" | "),
       "Em atraso": late > 0 ? "Sim" : t.dueAt ? "Não" : "",
       Atraso: late > 0 ? formatDuration(late) : "",
       "Criada por": t.createdBy.email,
@@ -71,11 +82,13 @@ export async function toXlsx(rows: Record<string, unknown>[], perUser: UserStats
     { header: "Novas", key: "c", width: 9 },
     { header: "Abertas", key: "o", width: 9 },
     { header: "Em andamento", key: "a", width: 14 },
+    { header: "Pausadas", key: "p", width: 10 },
     { header: "Concluídas", key: "k", width: 11 },
     { header: "Canceladas", key: "x", width: 11 },
     { header: "Vencidas", key: "v", width: 10 },
     { header: "Concluídas c/ atraso", key: "l", width: 18 },
     { header: "Tempo médio de conclusão", key: "avg", width: 24 },
+    { header: "Tempo trabalhado (horas)", key: "w", width: 22 },
   ];
   for (const u of perUser) {
     us.addRow({
@@ -85,11 +98,13 @@ export async function toXlsx(rows: Record<string, unknown>[], perUser: UserStats
       c: u.byStatus.CRIADO,
       o: u.byStatus.ABERTA,
       a: u.byStatus.EM_ANDAMENTO,
+      p: u.byStatus.PAUSADA,
       k: u.byStatus.CONCLUIDO,
       x: u.byStatus.CANCELADO,
       v: u.overdue,
       l: u.completedLate,
       avg: u.avgCompletionMs === null ? "" : formatDuration(u.avgCompletionMs),
+      w: msToHours(u.workedMs),
     });
   }
   us.getRow(1).font = { bold: true };

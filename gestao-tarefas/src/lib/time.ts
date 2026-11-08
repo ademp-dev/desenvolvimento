@@ -1,7 +1,7 @@
 // Regras de contagem de tempo. Funções puras (sem acesso a banco), usadas
 // tanto no servidor quanto no navegador.
 
-export type TaskStatusValue = "CRIADO" | "ABERTA" | "EM_ANDAMENTO" | "CONCLUIDO" | "CANCELADO";
+export type TaskStatusValue = "CRIADO" | "ABERTA" | "EM_ANDAMENTO" | "PAUSADA" | "CONCLUIDO" | "CANCELADO";
 
 export interface TimedTask {
   status: TaskStatusValue;
@@ -22,7 +22,7 @@ function toMs(d: Date | string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-export const OPEN_STATUSES: TaskStatusValue[] = ["CRIADO", "ABERTA", "EM_ANDAMENTO"];
+export const OPEN_STATUSES: TaskStatusValue[] = ["CRIADO", "ABERTA", "EM_ANDAMENTO", "PAUSADA"];
 
 export function isOpen(status: TaskStatusValue): boolean {
   return OPEN_STATUSES.includes(status);
@@ -70,6 +70,48 @@ export function formatDuration(ms: number): string {
   if (days === 0) return plural(hours, "hora", "horas");
   if (hours === 0) return plural(days, "dia", "dias");
   return `${plural(days, "dia", "dias")} e ${plural(hours, "hora", "horas")}`;
+}
+
+// --- Tempo trabalhado ---------------------------------------------------------
+// "Tempo decorrido" mede há quanto tempo o pedido espera (da criação ao
+// encerramento). "Tempo trabalhado" soma só os períodos entre Play e Pause.
+
+export interface WorkPeriod {
+  userId: string;
+  startedAt: Date | string;
+  endedAt?: Date | string | null;
+}
+
+/** Duração de um período; o período aberto conta até agora. */
+export function periodMs(p: WorkPeriod, now: Date = new Date()): number {
+  const start = toMs(p.startedAt) ?? now.getTime();
+  return Math.max(0, (toMs(p.endedAt) ?? now.getTime()) - start);
+}
+
+/** Tempo efetivamente trabalhado (ms): soma dos períodos. */
+export function workedMs(periods: WorkPeriod[], now: Date = new Date()): number {
+  return periods.reduce((sum, p) => sum + periodMs(p, now), 0);
+}
+
+/** Tempo trabalhado por pessoa (userId → ms). */
+export function workedByUser(periods: WorkPeriod[], now: Date = new Date()): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const p of periods) out.set(p.userId, (out.get(p.userId) ?? 0) + periodMs(p, now));
+  return out;
+}
+
+/** Há um período aberto (o relógio está correndo)? */
+export function isRunning(periods: WorkPeriod[]): boolean {
+  return periods.some((p) => p.endedAt === null || p.endedAt === undefined);
+}
+
+/** Formata tempo trabalhado em horas e minutos: "2h 05min", "45min", "26h 10min". */
+export function formatWorked(ms: number): string {
+  const totalMin = Math.floor(Math.max(0, ms) / 60_000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h === 0) return `${m}min`;
+  return `${h}h ${String(m).padStart(2, "0")}min`;
 }
 
 /** Duração em horas decimais (para exportação). */

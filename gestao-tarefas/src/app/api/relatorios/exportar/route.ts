@@ -4,6 +4,7 @@ import { parseFilters } from "@/lib/filters";
 import { reportRows, toCsv, toXlsx } from "@/lib/export";
 import { canViewGeneralReport } from "@/lib/permissions";
 import { findTasks } from "@/lib/queries";
+import { buildReportPdf } from "@/lib/report";
 import { statsByUser } from "@/lib/stats";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,21 @@ export async function GET(req: NextRequest) {
     params[key] = all.length > 1 ? all : all[0];
   }
   const now = new Date();
-  const tasks = await findTasks(user, parseFilters(params), now);
+  const filters = parseFilters(params);
+
+  if (sp.get("formato") === "pdf") {
+    const { pdf, filename } = await buildReportPdf(user, filters, now);
+    return new NextResponse(Buffer.from(pdf), {
+      headers: {
+        "Content-Type": "application/pdf",
+        // "inline": abre no visualizador do navegador, de onde dá para imprimir ou salvar.
+        "Content-Disposition": `inline; filename="${filename}"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
+  const tasks = await findTasks(user, filters, now);
   const rows = reportRows(tasks, now);
   const stamp = now.toISOString().slice(0, 10);
 

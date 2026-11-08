@@ -5,7 +5,8 @@ import { extractEmail } from "@/lib/address";
 import { filtersToQuery, parseFilters, sortTasks } from "@/lib/filters";
 import { computeStats, statsByUser } from "@/lib/stats";
 import { toCsv } from "@/lib/export";
-import { splitAddresses } from "@/lib/gmail";
+import { buildMime, splitAddresses } from "@/lib/gmail";
+import { formatWorked, workedByUser, workedMs } from "@/lib/time";
 
 const ana: Actor = { id: "ana", role: "USER", active: true };
 const bia: Actor = { id: "bia", role: "USER", active: true };
@@ -39,9 +40,17 @@ describe("transições de status", () => {
   it("usuário só avança no fluxo Nova → Aberta → Em andamento → Concluída, e cancela a qualquer momento", () => {
     expect(allowedTransitions("CRIADO", false)).toEqual(["ABERTA", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"]);
     expect(allowedTransitions("ABERTA", false)).toEqual(["EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"]);
-    expect(allowedTransitions("EM_ANDAMENTO", false)).toEqual(["CONCLUIDO", "CANCELADO"]);
+    expect(allowedTransitions("EM_ANDAMENTO", false)).toEqual(["PAUSADA", "CONCLUIDO", "CANCELADO"]);
     expect(canTransition("EM_ANDAMENTO", "ABERTA", false)).toBe(false);
     expect(canTransition("ABERTA", "CRIADO", false)).toBe(false);
+  });
+  it("Pause e Play alternam Em andamento ⇄ Pausada; só pausa o que está em andamento", () => {
+    expect(allowedTransitions("PAUSADA", false)).toEqual(["EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"]);
+    expect(canTransition("ABERTA", "PAUSADA", false)).toBe(false);
+    expect(canTransition("CRIADO", "PAUSADA", true)).toBe(false);
+    expect(isBackward("PAUSADA", "EM_ANDAMENTO")).toBe(false);
+    expect(isBackward("EM_ANDAMENTO", "PAUSADA")).toBe(false);
+    expect(isBackward("PAUSADA", "ABERTA")).toBe(true);
   });
   it("encerradas são finais para o usuário; admin move para qualquer status", () => {
     expect(allowedTransitions("CONCLUIDO", false)).toEqual([]);
@@ -97,7 +106,7 @@ describe("indicadores", () => {
   it("totaliza por status, vencidas e tempo médio", () => {
     const s = computeStats(tasks, now);
     expect(s.total).toBe(4);
-    expect(s.byStatus).toEqual({ CRIADO: 1, ABERTA: 0, EM_ANDAMENTO: 0, CONCLUIDO: 2, CANCELADO: 1 });
+    expect(s.byStatus).toEqual({ CRIADO: 1, ABERTA: 0, EM_ANDAMENTO: 0, PAUSADA: 0, CONCLUIDO: 2, CANCELADO: 1 });
     expect(s.overdue).toBe(1);
     expect(s.avgCompletionMs).toBe(2 * 24 * 3_600_000); // (1 dia + 3 dias) / 2
   });
@@ -123,5 +132,40 @@ describe("utilitários", () => {
   });
   it("separa destinatários respeitando aspas", () => {
     expect(splitAddresses('"Silva, Ana" <ana@x.org>, bia@x.org')).toEqual(['"Silva, Ana" <ana@x.org>', "bia@x.org"]);
+  });
+});
+
+describe("tempo trabalhado", () => {
+  const now = new Date("2026-11-02T12:00:00Z");
+  const periods = [
+    { userId: "ana", startedAt: "2026-11-02T08:00:00Z", endedAt: "2026-11-02T09:30:00Z" },
+    { userId: "bia", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:20:00Z" },
+    { userId: "bia", startedAt: "2026-11-02T11:15:00Z", endedAt: null }, // relógio correndo
+  ];
+  it("soma só os períodos entre Play e Pause, com o aberto contando até agora", () => {
+    expect(workedMs(periods, now)).toBe((90 + 20 + 45) * 60_000);
+    expect(workedByUser(periods, now).get("bia")).toBe(65 * 60_000);
+  });
+  it("formata em horas e minutos", () => {
+    expect(formatWorked(45 * 60_000)).toBe("45min");
+    expect(formatWorked(125 * 60_000)).toBe("2h 05min");
+    expect(formatWorked(26 * 3_600_000)).toBe("26h 00min");
+  });
+});
+
+describe("e-mail com anexo", () => {
+  it("monta MIME com assunto acentuado, sem injeção de cabeçalho", () => {
+    const mime = buildMime({
+      from: { name: "Renato Ó", email: "r@x.org" },
+      to: ["a@x.org", "b@x.org"],
+      subject: "Relatório\r\nBcc: intruso@x.org",
+      text: "Olá",
+      attachment: { filename: "rel.pdf", contentType: "application/pdf", data: new Uint8Array([37, 80, 68, 70]) },
+    });
+    expect(mime).toContain("To: a@x.org, b@x.org");
+    expect(mime).toMatch(/^Subject: =\?UTF-8\?B\?/m);
+    expect(mime).not.toMatch(/^Bcc:/m);
+    expect(mime).toContain('Content-Disposition: attachment; filename="rel.pdf"');
+    expect(mime).toContain("JVBERg=="); // "%PDF" em base64
   });
 });

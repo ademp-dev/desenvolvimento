@@ -15,12 +15,13 @@ enum Role {
   ADMIN
 }
 
-// Fluxo: CRIADO (exibido como "Nova") → ABERTA → EM_ANDAMENTO → CONCLUIDO.
+// Fluxo: CRIADO (exibido como "Nova") → ABERTA → EM_ANDAMENTO ⇄ PAUSADA → CONCLUIDO.
 // CANCELADO pode ocorrer a qualquer momento.
 enum TaskStatus {
   CRIADO
   ABERTA
   EM_ANDAMENTO
+  PAUSADA
   CONCLUIDO
   CANCELADO
 }
@@ -34,10 +35,16 @@ model User {
   id        String   @id @default(cuid())
   googleSub String?  @unique
   email     String   @unique
-  name      String
+  name      String   // nome completo (vem do Google a cada login)
+  // Apelido definido pelo administrador; quando existe, é o nome exibido
+  // em todo o sistema (ver src/lib/db.ts).
+  nickname  String?
   image     String?
   role      Role     @default(USER)
   active    Boolean  @default(true)
+  // Excluído pelo administrador. Quem tem histórico não é apagado de fato
+  // (o nome continua nas tarefas em que trabalhou); some das telas e listas.
+  deletedAt DateTime? @db.Timestamptz(3)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   lastLogin DateTime? @db.Timestamptz(3)
 
@@ -45,6 +52,7 @@ model User {
   tasksCreated     Task[]        @relation("TaskCreator")
   notes            TaskNote[]
   history          TaskHistory[]
+  workSessions     TaskWorkSession[]
   googleToken      GoogleToken?
 }
 
@@ -81,9 +89,10 @@ model Task {
   completedAt   DateTime?  @db.Timestamptz(3)
   canceledAt    DateTime?  @db.Timestamptz(3)
 
-  email   EmailSource?
-  notes   TaskNote[]
-  history TaskHistory[]
+  email        EmailSource?
+  notes        TaskNote[]
+  history      TaskHistory[]
+  workSessions TaskWorkSession[]
 
   @@index([responsibleId, status])
   @@index([createdById])
@@ -91,6 +100,23 @@ model Task {
   @@index([status])
   @@index([createdAt])
   @@index([dueAt])
+}
+
+// Períodos efetivamente trabalhados: abre no Play, fecha no Pause, na
+// conclusão, no cancelamento ou quando a tarefa passa para outra pessoa.
+// `endedAt` vazio = em andamento agora. Cada período é de quem era o
+// responsável naquele momento, o que permite somar o tempo de cada pessoa.
+model TaskWorkSession {
+  id        Int       @id @default(autoincrement())
+  taskId    Int
+  task      Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  startedAt DateTime  @db.Timestamptz(3)
+  endedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([taskId, startedAt])
+  @@index([userId])
 }
 
 // Metadados do e-mail que originou a tarefa (sem o corpo da mensagem).

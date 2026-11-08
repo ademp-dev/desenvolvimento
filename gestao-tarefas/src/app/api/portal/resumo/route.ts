@@ -34,7 +34,8 @@ export async function GET(req: Request) {
 
   const counts = { CRIADO: 0, ABERTA: 0, EM_ANDAMENTO: 0, overdue: 0 };
   for (const t of open) {
-    counts[t.status as "CRIADO" | "ABERTA" | "EM_ANDAMENTO"]++;
+    // O painel do portal só conhece estes três grupos: pausada conta como em andamento.
+    counts[t.status === "PAUSADA" ? "EM_ANDAMENTO" : (t.status as "CRIADO" | "ABERTA" | "EM_ANDAMENTO")]++;
     if (isOverdue(t, now)) counts.overdue++;
   }
 

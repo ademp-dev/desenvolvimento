@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Stats } from "@/lib/stats";
-import { formatDuration } from "@/lib/time";
+import { formatDuration, formatWorked } from "@/lib/time";
 import { Icon } from "./Icon";
 
 interface Props {
@@ -31,14 +31,16 @@ function Card({ label, value, icon, color, href }: { label: string; value: strin
 export function StatCards({ stats, linkBase }: Props) {
   const href = (q: string) => (linkBase ? `${linkBase}?${q}` : undefined);
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
       <Card label="Total" value={stats.total} icon="inbox" color="text-ink-2" href={linkBase} />
       <Card label="Novas" value={stats.byStatus.CRIADO} icon="fiber_new" color="text-[#0b57d0]" href={href("status=CRIADO")} />
       <Card label="Abertas" value={stats.byStatus.ABERTA} icon="drafts" color="text-[#b06000]" href={href("status=ABERTA")} />
       <Card label="Em andamento" value={stats.byStatus.EM_ANDAMENTO} icon="pending_actions" color="text-[#1a73e8]" href={href("status=EM_ANDAMENTO")} />
+      <Card label="Pausadas" value={stats.byStatus.PAUSADA} icon="pause_circle" color="text-[#b06000]" href={href("status=PAUSADA")} />
       <Card label="Concluídas" value={stats.byStatus.CONCLUIDO} icon="task_alt" color="text-[#188038]" href={href("status=CONCLUIDO")} />
       <Card label="Canceladas" value={stats.byStatus.CANCELADO} icon="cancel" color="text-ink-3" href={href("status=CANCELADO")} />
       <Card label="Vencidas" value={stats.overdue} icon="alarm" color="text-[#d93025]" href={href("vencidas=1")} />
+      <Card label="Tempo trabalhado" value={formatWorked(stats.workedMs)} icon="timer_play" color="text-[#025148]" />
       <Card label="Tempo médio" value={stats.avgCompletionMs === null ? "—" : formatDuration(stats.avgCompletionMs)} icon="timer" color="text-[#9334e6]" />
     </div>
   );
